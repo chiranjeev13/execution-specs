@@ -55,6 +55,7 @@ class TransactionType(IntEnum):
     BASE_FEE = 2
     BLOB_TRANSACTION = 3
     SET_CODE = 4
+    FRAME = 6
 
 
 @dataclass
@@ -186,6 +187,34 @@ class AuthorizationTuple(AuthorizationTupleGeneric[HexNumber]):
                 pass
 
 
+class Frame(CamelModel):
+    """EIP-8141 frame within a frame transaction."""
+
+    mode: HexNumber = Field(0)
+    target: Address | None = None
+    gas_limit: HexNumber = Field(0)
+    data: Bytes = Field(Bytes(b""))
+
+    def to_list(self, *, signing: bool = False) -> list:
+        """Return frame fields as a list for RLP encoding."""
+        return [
+            int(self.mode),
+            bytes(self.target) if self.target is not None else b"",
+            int(self.gas_limit),
+            bytes(self.data) if not signing else b"",
+        ]
+
+    def copy(self, **kwargs: Any) -> "Frame":
+        """Return a shallow copy with overridden fields."""
+        data = self.model_dump()
+        data.update(kwargs)
+        return Frame(**data)
+
+    def rlp(self) -> Bytes:
+        """Return RLP-encoded bytes for this frame."""
+        return Bytes(eth_rlp.encode(self.to_list()))
+
+
 class TransactionGeneric(BaseModel, Generic[NumberBoundTypeVar]):
     """
     Generic transaction type used as a parent for Transaction and
@@ -208,6 +237,8 @@ class TransactionGeneric(BaseModel, Generic[NumberBoundTypeVar]):
     access_list: List[AccessList] | None = None
     max_fee_per_blob_gas: NumberBoundTypeVar | None = None
     blob_versioned_hashes: Sequence[Hash] | None = None
+
+    frames: List[Frame] | None = None
 
     v: NumberBoundTypeVar = Field(0)  # type: ignore
     r: NumberBoundTypeVar = Field(0)  # type: ignore
@@ -372,7 +403,9 @@ class Transaction(
 
         if "ty" not in self.model_fields_set:
             # Try to deduce transaction type from included fields
-            if self.initcodes is not None:
+            if self.frames is not None:
+                self.ty = HexNumber(6)
+            elif self.initcodes is not None:
                 self.ty = HexNumber(6)
             elif self.authorization_list is not None:
                 self.ty = HexNumber(4)
@@ -431,7 +464,7 @@ class Transaction(
         if self.ty == 3 and self.max_fee_per_blob_gas is None:
             self.max_fee_per_blob_gas = HexNumber(1)
             self.model_fields_set.remove("max_fee_per_blob_gas")
-        if self.ty != 3:
+        if self.ty not in (3, 6):
             assert self.blob_versioned_hashes is None, (
                 "blob_versioned_hashes must be None"
             )
@@ -446,10 +479,11 @@ class Transaction(
                 "authorization_list must be None"
             )
 
-        if self.ty == 6 and self.initcodes is None:
+        if self.ty == 6 and self.frames is None and self.initcodes is None:
             self.initcodes = []
         if self.ty != 6:
             assert self.initcodes is None, "initcodes must be None"
+            assert self.frames is None, "frames must be None"
 
         if "nonce" not in self.model_fields_set and self.sender is not None:
             self.nonce = HexNumber(self.sender.get_nonce())

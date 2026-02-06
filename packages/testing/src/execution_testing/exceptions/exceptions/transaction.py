@@ -194,5 +194,25 @@ class TransactionException(ExceptionBase):
     """
     TYPE_4_TX_PRE_FORK = auto()
     """Transaction type 4 included before activation fork."""
+    TYPE_6_INVALID_FRAME_FORMAT = auto()
+    """
+    Transaction is type 6, but frame list is malformed (wrong
+    count, invalid mode, bad RLP, invalid field lengths, etc.).
+    """
+    TYPE_6_INVALID_BLOB_FIELDS = auto()
+    """
+    Transaction is type 6, but blob fields are inconsistent
+    (e.g. empty hashes with non-zero fee or vice versa).
+    """
+    TYPE_6_INVALID_APPROVAL = auto()
+    """
+    Transaction is type 6, but frame approval flow is invalid
+    (e.g. wrong ordering, duplicate approval, scope mismatch).
+    """
+    TYPE_6_INVALID_FRAME_EXECUTION = auto()
+    """
+    Transaction is type 6, but a frame failed execution (VERIFY
+    without APPROVE, exceptional halt, OOG, etc.).
+    """
     LOG_MISMATCH = auto()
     """Transaction receipt logs do not match expected logs."""

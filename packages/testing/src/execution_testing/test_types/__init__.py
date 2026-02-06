@@ -30,7 +30,7 @@ from .helpers import (
     compute_deterministic_create2_address,
 )
 from .phase_manager import TestPhase, TestPhaseManager
-from .receipt_types import TransactionLog, TransactionReceipt
+from .receipt_types import FrameReceipt, TransactionLog, TransactionReceipt
 from .request_types import (
     ConsolidationRequest,
     DepositRequest,
@@ -39,6 +39,7 @@ from .request_types import (
 )
 from .transaction_types import (
     AuthorizationTuple,
+    Frame,
     NetworkWrappedTransaction,
     Transaction,
     TransactionDefaults,
@@ -69,6 +70,8 @@ __all__ = (
     "Environment",
     "EnvironmentDefaults",
     "EOA",
+    "Frame",
+    "FrameReceipt",
     "NetworkWrappedTransaction",
     "Removable",
     "Requests",

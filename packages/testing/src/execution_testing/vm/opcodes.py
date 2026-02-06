@@ -5645,6 +5645,121 @@ class Opcodes(Opcode, Enum):
     Source: [evm.codes/#FF](https://www.evm.codes/#FF)
     """
 
+    # -- EIP-8141 Frame Transaction Opcodes --------------------------------
+
+    APPROVE = Opcode(
+        0xAA,
+        popped_stack_items=3,
+        pushed_stack_items=0,
+        kwargs=["scope", "offset", "size"],
+        terminating=True,
+    )
+    """
+    APPROVE(scope, offset, size)
+    ----
+
+    Description
+    ----
+    Terminate execution with an approval status. Behaves like RETURN
+    but also signals an approval scope (0=execution, 1=payment,
+    2=both). Introduced in EIP-8141.
+
+    Inputs
+    ----
+    - scope: approval scope (0, 1, or 2)
+    - offset: byte offset in memory of return data
+    - size: byte size of return data
+
+    Outputs
+    ----
+    None (terminates current context)
+    """
+
+    TXPARAMLOAD = Opcode(
+        0xB0,
+        popped_stack_items=3,
+        pushed_stack_items=1,
+        kwargs=["selector", "index", "offset"],
+    )
+    """
+    TXPARAMLOAD(selector, index, offset)
+    ----
+
+    Description
+    ----
+    Load a 32-byte word from a transaction parameter field.
+    Introduced in EIP-8141.
+
+    Inputs
+    ----
+    - selector: parameter field selector (0x00-0x15)
+    - index: frame index (for per-frame fields)
+    - offset: byte offset within the field
+
+    Outputs
+    ----
+    - value: 32-byte word from the parameter field
+    """
+
+    TXPARAMSIZE = Opcode(
+        0xB1,
+        popped_stack_items=2,
+        pushed_stack_items=1,
+        kwargs=["selector", "index"],
+    )
+    """
+    TXPARAMSIZE(selector, index)
+    ----
+
+    Description
+    ----
+    Return the byte size of a transaction parameter field.
+    Introduced in EIP-8141.
+
+    Inputs
+    ----
+    - selector: parameter field selector
+    - index: frame index (for per-frame fields)
+
+    Outputs
+    ----
+    - size: byte size of the field
+    """
+
+    TXPARAMCOPY = Opcode(
+        0xB2,
+        popped_stack_items=5,
+        pushed_stack_items=0,
+        kwargs=[
+            "selector",
+            "index",
+            "dest_offset",
+            "offset",
+            "size",
+        ],
+    )
+    """
+    TXPARAMCOPY(selector, index, dest_offset, offset, size)
+    ----
+
+    Description
+    ----
+    Copy bytes from a transaction parameter field into memory.
+    Introduced in EIP-8141.
+
+    Inputs
+    ----
+    - selector: parameter field selector
+    - index: frame index (for per-frame fields)
+    - dest_offset: byte offset in memory to copy to
+    - offset: byte offset within the field to copy from
+    - size: number of bytes to copy
+
+    Outputs
+    ----
+    None
+    """
+
 
 _push_opcodes_byte_list: List[Opcode] = [
     Opcodes.PUSH1,
