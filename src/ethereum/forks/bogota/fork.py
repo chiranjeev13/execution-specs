@@ -37,6 +37,8 @@ from .exceptions import (
     BlobCountExceededError,
     BlobGasLimitExceededError,
     EmptyAuthorizationListError,
+    FrameTransactionInvalidApprovalError,
+    FrameTransactionInvalidFrameExecutionError,
     InsufficientMaxFeePerBlobGasError,
     InsufficientMaxFeePerGasError,
     InvalidBlobVersionedHashError,
@@ -76,16 +78,22 @@ from .state_tracker import (
     track_selfdestruct,
 )
 from .transactions import (
+    ENTRY_POINT,
+    FRAME_TX_INTRINSIC_COST,
     AccessListTransaction,
     BlobTransaction,
     FeeMarketTransaction,
+    Frame,
+    FrameTransaction,
     LegacyTransaction,
     SetCodeTransaction,
     Transaction,
+    calculate_frame_tx_intrinsic_cost,
     decode_transaction,
     encode_transaction,
     get_transaction_hash,
     recover_sender,
+    signing_hash_8141,
     validate_transaction,
 )
 from .trie import root, trie_set
@@ -477,6 +485,9 @@ def check_transaction(
         is empty.
 
     """
+    if isinstance(tx, FrameTransaction):
+        return check_frame_transaction(block_env, block_output, tx)
+
     gas_available = block_env.block_gas_limit - block_output.block_gas_used
     blob_gas_available = MAX_BLOB_GAS_PER_BLOCK - block_output.blob_gas_used
 
@@ -558,6 +569,101 @@ def check_transaction(
         raise InsufficientBalanceError("insufficient sender balance")
     if sender_account.code and not is_valid_delegation(sender_account.code):
         raise InvalidSenderError("not EOA")
+
+    return (
+        sender_address,
+        effective_gas_price,
+        blob_versioned_hashes,
+        tx_blob_gas_used,
+    )
+
+
+def check_frame_transaction(
+    block_env: vm.BlockEnvironment,
+    block_output: vm.BlockOutput,
+    tx: FrameTransaction,
+) -> Tuple[Address, Uint, Tuple[VersionedHash, ...], U64]:
+    """
+    Check if a frame transaction is includable in the block.
+
+    Parameters
+    ----------
+    block_env :
+        The block scoped environment.
+    block_output :
+        The block output for the current block.
+    tx :
+        The frame transaction.
+
+    Returns
+    -------
+    sender_address :
+        The sender of the transaction.
+    effective_gas_price :
+        The effective gas price.
+    blob_versioned_hashes :
+        The blob versioned hashes.
+    tx_blob_gas_used :
+        The blob gas used.
+    """
+    intrinsic_gas, _ = validate_transaction(tx)
+    tx_gas_limit = intrinsic_gas
+
+    gas_available = block_env.block_gas_limit - block_output.block_gas_used
+    if tx_gas_limit > gas_available:
+        raise GasUsedExceedsLimitError("gas used exceeds limit")
+
+    tx_blob_gas_used = calculate_total_blob_gas(tx)
+    blob_gas_available = MAX_BLOB_GAS_PER_BLOCK - block_output.blob_gas_used
+    if tx_blob_gas_used > blob_gas_available:
+        raise BlobGasLimitExceededError("blob gas limit exceeded")
+
+    sender_address = tx.sender
+
+    if tx.max_fee_per_gas < tx.max_priority_fee_per_gas:
+        raise PriorityFeeGreaterThanMaxFeeError(
+            "priority fee greater than max fee"
+        )
+    if tx.max_fee_per_gas < block_env.base_fee_per_gas:
+        raise InsufficientMaxFeePerGasError(
+            tx.max_fee_per_gas, block_env.base_fee_per_gas
+        )
+
+    priority_fee_per_gas = min(
+        tx.max_priority_fee_per_gas,
+        tx.max_fee_per_gas - block_env.base_fee_per_gas,
+    )
+    effective_gas_price = priority_fee_per_gas + block_env.base_fee_per_gas
+
+    # Blob validation
+    blob_versioned_hashes: Tuple[VersionedHash, ...] = ()
+    if len(tx.blob_versioned_hashes) > 0:
+        blob_count = len(tx.blob_versioned_hashes)
+        if blob_count > BLOB_COUNT_LIMIT:
+            raise BlobCountExceededError(
+                f"Tx has {blob_count} blobs. Max: {BLOB_COUNT_LIMIT}"
+            )
+        for bvh in tx.blob_versioned_hashes:
+            if bvh[0:1] != VERSIONED_HASH_VERSION_KZG:
+                raise InvalidBlobVersionedHashError(
+                    "invalid blob versioned hash"
+                )
+        blob_gas_price = calculate_blob_gas_price(block_env.excess_blob_gas)
+        if Uint(tx.max_fee_per_blob_gas) < blob_gas_price:
+            raise InsufficientMaxFeePerBlobGasError(
+                "insufficient max fee per blob gas"
+            )
+        blob_versioned_hashes = tx.blob_versioned_hashes
+
+    # Nonce check
+    sender_account = get_account(block_env.state, sender_address)
+    if sender_account.nonce > Uint(tx.nonce):
+        raise NonceMismatchError("nonce too low")
+    elif sender_account.nonce < Uint(tx.nonce):
+        raise NonceMismatchError("nonce too high")
+
+    # No balance check at this point — payment comes from the payer
+    # No code check — smart accounts are the point
 
     return (
         sender_address,
@@ -816,7 +922,10 @@ def apply_body(
     )
 
     for i, tx in enumerate(map(decode_transaction, transactions)):
-        process_transaction(block_env, block_output, tx, Uint(i))
+        if isinstance(tx, FrameTransaction):
+            process_frame_transaction(block_env, block_output, tx, Uint(i))
+        else:
+            process_transaction(block_env, block_output, tx, Uint(i))
 
     # EIP-7928: Increment block frame to post-execution index
     # After N transactions, block frame is at index N
@@ -912,6 +1021,10 @@ def process_transaction(
         Index of the transaction in the block.
 
     """
+    # EIP-8141: Delegate to frame transaction processor
+    if isinstance(tx, FrameTransaction):
+        return process_frame_transaction(block_env, block_output, tx, index)
+
     # EIP-7928: Create a transaction-level StateChanges frame
     # The frame will read the current block_access_index from the block frame
     increment_block_access_index(block_env.state_changes)
@@ -1096,6 +1209,406 @@ def process_transaction(
     # EIP-7928: Commit transaction frame (includes net-zero filtering).
     # Must happen AFTER destroy_account so filtering sees correct state.
     commit_transaction_frame(tx_env.state_changes)
+
+
+def process_frame_transaction(
+    block_env: vm.BlockEnvironment,
+    block_output: vm.BlockOutput,
+    tx: FrameTransaction,
+    index: Uint,
+) -> None:
+    """
+    Process a frame transaction as defined in [EIP-8141].
+
+    Executes each frame in order, managing approval state, gas isolation,
+    transient storage reset, and warm/cold sharing across frames.
+
+    Parameters
+    ----------
+    block_env :
+        The block scoped environment.
+    block_output :
+        The block output for the current block.
+    tx :
+        The frame transaction.
+    index :
+        The index of the transaction in the block.
+
+    [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+    """
+    from ethereum_types.bytes import Bytes0
+
+    from .vm.precompiled_contracts.mapping import PRE_COMPILED_CONTRACTS
+
+    # EIP-7928: Create a transaction-level StateChanges frame
+    increment_block_access_index(block_env.state_changes)
+    tx_state_changes = create_child_frame(block_env.state_changes)
+
+    # Capture coinbase pre-balance
+    coinbase_pre_balance = get_account(
+        block_env.state, block_env.coinbase
+    ).balance
+    track_address(tx_state_changes, block_env.coinbase)
+    capture_pre_balance(
+        tx_state_changes, block_env.coinbase, coinbase_pre_balance
+    )
+
+    trie_set(
+        block_output.transactions_trie,
+        rlp.encode(index),
+        encode_transaction(tx),
+    )
+
+    intrinsic_gas, _ = validate_transaction(tx)
+    tx_gas_limit = intrinsic_gas
+
+    (
+        sender,
+        effective_gas_price,
+        blob_versioned_hashes,
+        tx_blob_gas_used,
+    ) = check_transaction(
+        block_env=block_env,
+        block_output=block_output,
+        tx=tx,
+    )
+
+    if isinstance(tx, FrameTransaction) and len(tx.blob_versioned_hashes) > 0:
+        blob_gas_fee = calculate_data_fee(block_env.excess_blob_gas, tx)
+    else:
+        blob_gas_fee = Uint(0)
+
+    # Track sender
+    track_address(tx_state_changes, sender)
+    sender_balance_before = get_account(block_env.state, sender).balance
+    capture_pre_balance(tx_state_changes, sender, sender_balance_before)
+
+    # Initialize approval state
+    payer_approved = False
+    sender_approved = False
+    payer_address: Optional[Address] = None
+    frame_statuses: List[int] = []
+    frame_logs: List[Tuple[Log, ...]] = []
+    frame_gas_used_list: List[Uint] = []
+    total_gas_used = Uint(0)
+
+    # Shared accessed addresses/storage across frames
+    accessed_addresses: set = set()
+    accessed_addresses.add(block_env.coinbase)
+    accessed_addresses.update(PRE_COMPILED_CONTRACTS.keys())
+    accessed_storage_keys: set = set()
+
+    try:
+        for frame_index, frame in enumerate(tx.frames):
+            # Determine target
+            if isinstance(frame.target, Bytes0) or frame.target == Bytes0(
+                b""
+            ):
+                target = sender
+            else:
+                target = Address(frame.target)
+
+            # Determine caller and validate mode
+            if frame.mode == Uint(2):  # SENDER mode
+                if not sender_approved:
+                    raise FrameTransactionInvalidApprovalError(
+                        "SENDER mode before execution approval"
+                    )
+                caller = sender
+            else:  # DEFAULT or VERIFY
+                caller = ENTRY_POINT
+
+            # Set up frame execution
+            is_static = frame.mode == Uint(1)  # VERIFY → static
+
+            # Reset transient storage between frames
+            transient_storage = TransientStorage()
+
+            # Create tx_env for this frame
+            frame_tx_env = vm.TransactionEnvironment(
+                origin=caller,  # ORIGIN returns frame's caller
+                gas_price=effective_gas_price,
+                gas=frame.gas_limit,
+                access_list_addresses=set(),
+                access_list_storage_keys=set(),
+                transient_storage=transient_storage,
+                blob_versioned_hashes=blob_versioned_hashes,
+                authorizations=(),
+                index_in_block=index,
+                tx_hash=get_transaction_hash(encode_transaction(tx)),
+                state_changes=tx_state_changes,
+                # Frame-transaction-scoped state
+                frame_tx=tx,
+                current_frame_index=frame_index,
+                frame_statuses=frame_statuses,
+            )
+
+            # Get target code
+            code = get_account(block_env.state, target).code
+
+            # Add target and caller to accessed addresses
+            accessed_addresses.add(target)
+            accessed_addresses.add(caller)
+            accessed_addresses.add(sender)
+
+            # Create call frame
+            call_frame = create_child_frame(tx_state_changes)
+
+            message = vm.Message(
+                block_env=block_env,
+                tx_env=frame_tx_env,
+                caller=caller,
+                target=target,
+                current_target=target,
+                gas=frame.gas_limit,
+                value=U256(0),
+                data=frame.data,
+                code=code,
+                depth=Uint(0),
+                code_address=target,
+                should_transfer_value=False,
+                is_static=is_static,
+                accessed_addresses=set(accessed_addresses),
+                accessed_storage_keys=set(accessed_storage_keys),
+                disable_precompiles=False,
+                parent_evm=None,
+                is_create=False,
+                state_changes=call_frame,
+            )
+
+            frame_output = process_message_call(message)
+
+            # Calculate frame gas used
+            frame_gas_used = frame.gas_limit - frame_output.gas_left
+            total_gas_used += frame_gas_used
+
+            # Update warm state (shared across frames)
+            if frame_output.accessed_addresses is not None:
+                accessed_addresses.update(frame_output.accessed_addresses)
+            if frame_output.accessed_storage_keys is not None:
+                accessed_storage_keys.update(
+                    frame_output.accessed_storage_keys
+                )
+
+            # Determine frame status
+            frame_status = 0
+            if frame_output.error is None:
+                # Check for APPROVE status from output
+                approve_status = getattr(
+                    frame_output, "approve_status", None
+                )
+                if approve_status is not None and approve_status > 1:
+                    frame_status = approve_status
+                else:
+                    frame_status = 1  # SUCCESS
+            # else: frame_status = 0 (FAIL)
+
+            # Handle VERIFY frame requirements
+            if frame.mode == Uint(1):  # VERIFY
+                if frame_status < 2 or frame_status > 4:
+                    raise FrameTransactionInvalidFrameExecutionError(
+                        "VERIFY frame must terminate with APPROVE (2-4)"
+                    )
+
+            # Process approval state for status 2-4
+            if 2 <= frame_status <= 4:
+                # Status 2: execution approval
+                if frame_status == 2 or frame_status == 4:
+                    if target == sender:
+                        if sender_approved:
+                            # Duplicate execution approval → revert frame
+                            frame_status = 0
+                            frame_output = _revert_frame_output(
+                                frame_output, frame.gas_limit
+                            )
+                            if frame.mode == Uint(1):
+                                raise (
+                                    FrameTransactionInvalidFrameExecutionError(
+                                        "Duplicate execution approval "
+                                        "in VERIFY"
+                                    )
+                                )
+                        else:
+                            sender_approved = True
+                    else:
+                        # scope=0 with non-sender target
+                        raise FrameTransactionInvalidApprovalError(
+                            "Execution approval with non-sender target"
+                        )
+
+                # Status 3: payment approval
+                if frame_status == 3 or frame_status == 4:
+                    if frame_status == 3 and not sender_approved:
+                        # Payment before execution approval
+                        raise FrameTransactionInvalidApprovalError(
+                            "Payment approval before execution approval"
+                        )
+                    if frame_status == 4 and sender_approved:
+                        # Status 4 when sender already approved
+                        # (The sender_approved was set above in the
+                        # status==4 branch, so check the state before
+                        # this frame)
+                        # Actually for status 4, we set sender_approved
+                        # above. The rule is: status 4 is only valid
+                        # if sender_approved was false BEFORE this frame.
+                        # Since we set it above, we need to check if it
+                        # was already true before we set it.
+                        # This is handled: if sender_approved was already
+                        # True when we entered status 2/4 check above,
+                        # we would have reverted the frame.
+                        pass
+
+                    if payer_approved:
+                        # Duplicate payment
+                        raise FrameTransactionInvalidApprovalError(
+                            "Duplicate payment approval"
+                        )
+
+                    # Collect gas cost from target (payer)
+                    total_tx_gas_fee = tx_gas_limit * effective_gas_price
+                    payer_balance = get_account(
+                        block_env.state, target
+                    ).balance
+                    if Uint(payer_balance) < (
+                        total_tx_gas_fee + blob_gas_fee
+                    ):
+                        raise InvalidBlock(
+                            "Payer has insufficient balance"
+                        )
+
+                    # Deduct gas fee from payer
+                    track_address(tx_state_changes, target)
+                    capture_pre_balance(
+                        tx_state_changes,
+                        target,
+                        payer_balance,
+                    )
+                    new_payer_balance = U256(
+                        Uint(payer_balance)
+                        - total_tx_gas_fee
+                        - blob_gas_fee
+                    )
+                    set_account_balance(
+                        block_env.state, target, new_payer_balance
+                    )
+                    track_balance_change(
+                        tx_state_changes, target, new_payer_balance
+                    )
+
+                    # Increment sender nonce
+                    increment_nonce(block_env.state, sender)
+                    sender_nonce_after = get_account(
+                        block_env.state, sender
+                    ).nonce
+                    track_nonce_change(
+                        tx_state_changes, sender, U64(sender_nonce_after)
+                    )
+
+                    payer_approved = True
+                    payer_address = target
+
+            frame_statuses.append(frame_status)
+            if frame_output.error is None and frame_status > 0:
+                frame_logs.append(frame_output.logs)
+            else:
+                frame_logs.append(())
+            frame_gas_used_list.append(frame_gas_used)
+
+        # After all frames: payer must be approved
+        if not payer_approved:
+            raise FrameTransactionInvalidFrameExecutionError(
+                "payer_approved must be true after all frames"
+            )
+
+    except (
+        FrameTransactionInvalidApprovalError,
+        FrameTransactionInvalidFrameExecutionError,
+    ):
+        raise
+    except InvalidBlock:
+        raise
+
+    # Calculate refund
+    frame_gas_sum = Uint(0)
+    for frame in tx.frames:
+        frame_gas_sum += frame.gas_limit
+
+    gas_refund = frame_gas_sum - total_gas_used
+    gas_refund_amount = gas_refund * effective_gas_price
+
+    # Refund to payer
+    assert payer_address is not None
+    payer_balance_after_refund = get_account(
+        block_env.state, payer_address
+    ).balance + U256(gas_refund_amount)
+    set_account_balance(
+        block_env.state, payer_address, payer_balance_after_refund
+    )
+    track_balance_change(
+        tx_state_changes, payer_address, payer_balance_after_refund
+    )
+
+    # Pay coinbase
+    tx_gas_used_after_refund = tx_gas_limit - gas_refund
+    priority_fee_per_gas = effective_gas_price - block_env.base_fee_per_gas
+    transaction_fee = tx_gas_used_after_refund * priority_fee_per_gas
+
+    coinbase_balance_after = get_account(
+        block_env.state, block_env.coinbase
+    ).balance + U256(transaction_fee)
+    set_account_balance(
+        block_env.state, block_env.coinbase, coinbase_balance_after
+    )
+    track_balance_change(
+        tx_state_changes, block_env.coinbase, coinbase_balance_after
+    )
+
+    if coinbase_balance_after == 0 and account_exists_and_is_empty(
+        block_env.state, block_env.coinbase
+    ):
+        destroy_account(block_env.state, block_env.coinbase)
+
+    # Update block gas used
+    block_output.block_gas_used += tx_gas_used_after_refund
+    block_output.blob_gas_used += tx_blob_gas_used
+
+    # Build receipt
+    all_logs: Tuple[Log, ...] = ()
+    for logs in frame_logs:
+        all_logs += logs
+
+    receipt = make_receipt(
+        tx, None, block_output.block_gas_used, all_logs
+    )
+
+    receipt_key = rlp.encode(Uint(index))
+    block_output.receipt_keys += (receipt_key,)
+
+    trie_set(
+        block_output.receipts_trie,
+        receipt_key,
+        receipt,
+    )
+
+    block_output.block_logs += all_logs
+
+    # EIP-7928: Commit transaction frame
+    commit_transaction_frame(tx_state_changes)
+
+
+def _revert_frame_output(
+    frame_output: MessageCallOutput,
+    gas_limit: Uint,
+) -> MessageCallOutput:
+    """Create a reverted version of a frame output."""
+    return MessageCallOutput(
+        gas_left=frame_output.gas_left,
+        refund_counter=U256(0),
+        logs=(),
+        accounts_to_delete=set(),
+        error=EthereumException("frame reverted"),
+        return_data=Bytes(b""),
+    )
 
 
 def process_withdrawals(

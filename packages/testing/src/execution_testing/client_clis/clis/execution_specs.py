@@ -228,6 +228,20 @@ class ExecutionSpecsExceptionMapper(ExceptionMapper):
         BlockException.SYSTEM_CONTRACT_CALL_FAILED: "call failed:",
         BlockException.INVALID_DEPOSIT_EVENT_LAYOUT: "deposit",
         TransactionException.LOG_MISMATCH: "LogMismatchError",
+        TransactionException.TYPE_6_INVALID_APPROVAL: (
+            "FrameTransactionInvalidApprovalError"
+        ),
+        TransactionException.TYPE_6_INVALID_FRAME_EXECUTION: (
+            "FrameTransactionInvalidFrameExecutionError"
+        ),
+        TransactionException.TYPE_6_INVALID_FRAME_FORMAT: (
+            "FrameTransactionInvalidFormatError"
+        ),
+        TransactionException.TYPE_6_INVALID_BLOB_FIELDS: (
+            "FrameTransactionInvalidBlobFieldsError"
+        ),
+        TransactionException.NONCE_OVERFLOW: "NonceOverflowError",
+        TransactionException.INVALID_CHAINID: "InvalidChainIdError",
     }
     mapping_regex: ClassVar[Dict[ExceptionBase, str]] = {
         # Temporary solution for issue #1981.

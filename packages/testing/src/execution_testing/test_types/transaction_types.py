@@ -197,10 +197,14 @@ class Frame(CamelModel):
 
     def to_list(self, *, signing: bool = False) -> list:
         """Return frame fields as a list for RLP encoding."""
+        from execution_testing.base_types.serialization import (
+            to_serializable_element,
+        )
+
         return [
-            int(self.mode),
+            to_serializable_element(self.mode),
             bytes(self.target) if self.target is not None else b"",
-            int(self.gas_limit),
+            to_serializable_element(self.gas_limit),
             bytes(self.data) if not signing else b"",
         ]
 
@@ -428,7 +432,11 @@ class Transaction(
             raise Transaction.InvalidSignaturePrivateKeyError()
 
         if "v" not in self.model_fields_set and self.secret_key is None:
-            if self.sender is not None:
+            if self.ty == 6 and self.frames is not None:
+                # EIP-8141: Frame transactions have no signature;
+                # sender is explicit in the payload.
+                pass
+            elif self.sender is not None:
                 self.secret_key = self.sender.key
             else:
                 self.secret_key = Hash(TestPrivateKey)
@@ -479,7 +487,13 @@ class Transaction(
                 "authorization_list must be None"
             )
 
-        if self.ty == 6 and self.frames is None and self.initcodes is None:
+        if self.ty == 6 and self.frames is not None:
+            # EIP-8141: Frame transactions need blob fields defaulted
+            if self.blob_versioned_hashes is None:
+                self.blob_versioned_hashes = []
+            if self.max_fee_per_blob_gas is None:
+                self.max_fee_per_blob_gas = HexNumber(0)
+        elif self.ty == 6 and self.frames is None and self.initcodes is None:
             self.initcodes = []
         if self.ty != 6:
             assert self.initcodes is None, "initcodes must be None"
@@ -517,6 +531,9 @@ class Transaction(
 
     def sign(self: "Transaction") -> None:
         """Signs the authorization tuple with a private key."""
+        if self.ty == 6 and self.frames is not None:
+            # EIP-8141: Frame transactions have no signature
+            return
         signature_bytes: bytes | None = None
         rlp_signing_bytes = self.rlp_signing_bytes()
         if (
@@ -584,6 +601,11 @@ class Transaction(
         self, *, keep_secret_key: bool = False
     ) -> Self:
         """Return signed version of the transaction using the private key."""
+        if self.ty == 6 and self.frames is not None:
+            # EIP-8141: Frame transactions have no signature;
+            # sender is already set explicitly.
+            return self
+
         updated_values: Dict[str, Any] = {}
 
         if (
@@ -652,7 +674,19 @@ class Transaction(
         depending on the transaction type.
         """
         field_list: List[str]
-        if self.ty == 6:
+        if self.ty == 6 and self.frames is not None:
+            # EIP-8141: Frame Transaction
+            field_list = [
+                "chain_id",
+                "nonce",
+                "sender",
+                "frames",
+                "max_priority_fee_per_gas",
+                "max_fee_per_gas",
+                "max_fee_per_blob_gas",
+                "blob_versioned_hashes",
+            ]
+        elif self.ty == 6:
             # EIP-7873: https://eips.ethereum.org/EIPS/eip-7873
             field_list = [
                 "chain_id",
@@ -750,6 +784,9 @@ class Transaction(
         depending on the transaction type.
         """
         fields = self.get_rlp_signing_fields()
+        if self.ty == 6 and self.frames is not None:
+            # EIP-8141: Frame transactions have no signature fields
+            return fields
         if self.ty == 0 and self.protected:
             fields = fields[:-3]
         return fields + ["v", "r", "s"]

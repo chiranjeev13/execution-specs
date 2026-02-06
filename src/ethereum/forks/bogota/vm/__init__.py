@@ -114,6 +114,21 @@ class TransactionEnvironment:
     index_in_block: Optional[Uint]
     tx_hash: Optional[Hash32]
     state_changes: "StateChanges" = field(default_factory=StateChanges)
+    frame_tx: Optional[object] = None
+    """
+    Reference to the ``FrameTransaction`` for ``TXPARAM*`` opcodes.
+    ``None`` for non-frame transactions.
+    """
+    current_frame_index: Optional[int] = None
+    """
+    Index of the currently executing frame. ``None`` for non-frame
+    transactions.
+    """
+    frame_statuses: Optional[List[int]] = None
+    """
+    Status codes of completed frames for ``TXPARAM(0x15)`` introspection.
+    ``None`` for non-frame transactions.
+    """
 
 
 @dataclass
@@ -164,6 +179,11 @@ class Evm:
     accessed_addresses: Set[Address]
     accessed_storage_keys: Set[Tuple[Address, Bytes32]]
     state_changes: StateChanges
+    approve_status: Optional[int] = None
+    """
+    The APPROVE status code (2, 3, or 4) set by the ``APPROVE`` opcode.
+    ``None`` if APPROVE was not called. Used by frame transaction processing.
+    """
 
 
 def incorporate_child_on_success(evm: Evm, child_evm: Evm) -> None:
@@ -186,6 +206,12 @@ def incorporate_child_on_success(evm: Evm, child_evm: Evm) -> None:
     evm.accessed_storage_keys.update(child_evm.accessed_storage_keys)
 
     merge_on_success(child_evm.state_changes)
+
+    # EIP-8141: Propagate APPROVE status from child
+    # Note: approve_status is NOT propagated to the parent.
+    # APPROVE only sets the status at the direct EVM level.
+    # The CALL instruction pushes the status code (2-4) onto the stack,
+    # but the parent EVM's approve_status is not affected.
 
 
 def incorporate_child_on_error(evm: Evm, child_evm: Evm) -> None:

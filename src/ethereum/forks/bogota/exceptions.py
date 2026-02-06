@@ -129,3 +129,44 @@ class TransactionGasLimitExceededError(InvalidTransaction):
     Note that this is _not_ the exception thrown when bytecode execution runs
     out of gas.
     """
+
+
+class FrameTransactionInvalidFormatError(InvalidTransaction):
+    """
+    A frame transaction has invalid static format constraints, such as
+    invalid frame count, mode, target length, or sender length.
+
+    See [EIP-8141] for the full list of static constraints.
+
+    [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+    """
+
+
+class FrameTransactionInvalidBlobFieldsError(InvalidTransaction):
+    """
+    A frame transaction has inconsistent blob fields: non-zero
+    ``max_fee_per_blob_gas`` with empty ``blob_versioned_hashes``, or vice
+    versa.
+
+    [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+    """
+
+
+class FrameTransactionInvalidApprovalError(InvalidTransaction):
+    """
+    A frame transaction has an invalid approval flow, such as
+    ``SENDER`` mode before execution approval, duplicate approvals,
+    or payment before execution approval.
+
+    [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+    """
+
+
+class FrameTransactionInvalidFrameExecutionError(InvalidTransaction):
+    """
+    A frame transaction has a ``VERIFY`` frame that did not terminate
+    with an ``APPROVE`` status code (2-4), or the transaction's approval
+    requirements were not satisfied after all frames executed.
+
+    [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+    """

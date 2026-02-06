@@ -63,7 +63,7 @@ def test_receipt_payer_and_frame_receipts(
     tx = make_frame_tx(
         sender=sender,
         frames=frames,
-        max_fee_per_gas=0,
+        max_fee_per_gas=7,
         max_priority_fee_per_gas=0,
     )
     tx.expected_receipt = TransactionReceipt(
@@ -94,14 +94,13 @@ def test_receipt_payer_and_frame_receipts(
     )
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
                 nonce=1,
-                balance=10**18,
             ),
         },
     )
@@ -148,7 +147,7 @@ def test_frame_receipt_gas_used(
     tx = make_frame_tx(
         sender=sender,
         frames=frames,
-        max_fee_per_gas=0,
+        max_fee_per_gas=7,
         max_priority_fee_per_gas=0,
     )
 
@@ -174,14 +173,13 @@ def test_frame_receipt_gas_used(
     )
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
                 nonce=1,
-                balance=10**18,
             ),
             exec_target: Account(storage={0x42: 1}),
         },
@@ -229,7 +227,7 @@ def test_frame_receipt_approve_status_codes(
     tx = make_frame_tx(
         sender=sender,
         frames=frames,
-        max_fee_per_gas=0,
+        max_fee_per_gas=7,
         max_priority_fee_per_gas=0,
     )
 
@@ -245,18 +243,16 @@ def test_frame_receipt_approve_status_codes(
     )
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_EXECUTION),
                 nonce=1,
-                balance=10**18,
             ),
             sponsor: Account(
                 code=approve_bytecode(Spec.APPROVE_PAYMENT),
-                balance=10**18,
             ),
         },
     )
@@ -295,7 +291,7 @@ def test_frame_receipt_reverted_sender_frame(
     tx = make_frame_tx(
         sender=sender,
         frames=frames,
-        max_fee_per_gas=0,
+        max_fee_per_gas=7,
         max_priority_fee_per_gas=0,
     )
     tx.expected_receipt = TransactionReceipt(
@@ -307,14 +303,13 @@ def test_frame_receipt_reverted_sender_frame(
     )
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
                 nonce=1,
-                balance=10**18,
             ),
         },
     )
@@ -353,7 +348,7 @@ def test_frame_receipt_oog_sender_frame(
     tx = make_frame_tx(
         sender=sender,
         frames=frames,
-        max_fee_per_gas=0,
+        max_fee_per_gas=7,
         max_priority_fee_per_gas=0,
     )
     tx.expected_receipt = TransactionReceipt(
@@ -365,14 +360,13 @@ def test_frame_receipt_oog_sender_frame(
     )
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
                 nonce=1,
-                balance=10**18,
             ),
         },
     )

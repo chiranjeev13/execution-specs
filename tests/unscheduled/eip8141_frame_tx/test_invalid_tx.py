@@ -25,7 +25,9 @@ from .spec import Spec, ref_spec_8141
 REFERENCE_SPEC_GIT_PATH = ref_spec_8141.git_path
 REFERENCE_SPEC_VERSION = ref_spec_8141.version
 
-pytestmark = pytest.mark.exception_test
+exception_test = pytest.mark.exception_test
+
+
 
 
 class OversizedAddress(FixedSizeBytes[21]):  # type: ignore[misc]
@@ -72,6 +74,7 @@ def _dummy_frames(count: int) -> List[Frame]:
         ),
     ],
 )
+@exception_test
 def test_invalid_frame_count(
     transaction_test: TransactionTestFiller,
     pre: Alloc,
@@ -86,6 +89,7 @@ def test_invalid_frame_count(
 
 
 @pytest.mark.parametrize("mode", [3, 4])
+@exception_test
 def test_invalid_mode(
     transaction_test: TransactionTestFiller,
     pre: Alloc,
@@ -108,6 +112,7 @@ def test_invalid_mode(
     "address_type",
     [OversizedAddress, UndersizedAddress],
 )
+@exception_test
 def test_invalid_target_length(
     transaction_test: TransactionTestFiller,
     pre: Alloc,
@@ -134,6 +139,7 @@ def test_invalid_target_length(
     "sender_type",
     [OversizedAddress, UndersizedAddress],
 )
+@exception_test
 def test_invalid_sender_length(
     transaction_test: TransactionTestFiller,
     pre: Alloc,
@@ -175,6 +181,7 @@ def test_invalid_sender_length(
         ),
     ],
 )
+@exception_test
 def test_invalid_chain_id(
     transaction_test: TransactionTestFiller,
     pre: Alloc,
@@ -202,6 +209,7 @@ def test_invalid_chain_id(
         ),
     ],
 )
+@exception_test
 def test_invalid_nonce(
     transaction_test: TransactionTestFiller,
     pre: Alloc,
@@ -221,6 +229,7 @@ def test_invalid_nonce(
     transaction_test(pre=pre, tx=tx)
 
 
+@exception_test
 def test_invalid_blob_fields_empty_hashes_non_zero_fee(
     transaction_test: TransactionTestFiller,
     pre: Alloc,
@@ -243,6 +252,7 @@ def test_invalid_blob_fields_empty_hashes_non_zero_fee(
     transaction_test(pre=pre, tx=tx)
 
 
+@exception_test
 def test_invalid_blob_fields_hashes_zero_fee(
     transaction_test: TransactionTestFiller,
     pre: Alloc,
@@ -272,6 +282,7 @@ def test_invalid_blob_fields_hashes_zero_fee(
         pytest.param(InvalidRLPMode.EXTRA_BYTES, id="extra"),
     ],
 )
+@exception_test
 def test_invalid_rlp_encoding(
     transaction_test: TransactionTestFiller,
     pre: Alloc,
@@ -294,6 +305,7 @@ def test_invalid_rlp_encoding(
     transaction_test(pre=pre, tx=tx)
 
 
+@exception_test
 @pytest.mark.parametrize("missing_index", [0, 1])
 def test_invalid_rlp_missing_field(
     transaction_test: TransactionTestFiller,
@@ -333,6 +345,7 @@ def test_invalid_rlp_missing_field(
     transaction_test(pre=pre, tx=tx)
 
 
+@exception_test
 def test_invalid_frame_not_list(
     transaction_test: TransactionTestFiller,
     pre: Alloc,
@@ -364,6 +377,7 @@ def test_invalid_frame_not_list(
     transaction_test(pre=pre, tx=tx)
 
 
+@exception_test
 def test_invalid_frame_field_type(
     transaction_test: TransactionTestFiller,
     pre: Alloc,
@@ -469,6 +483,7 @@ def test_null_target_valid(
     transaction_test(pre=pre, tx=tx)
 
 
+@exception_test
 def test_frame_gas_limit_zero(
     transaction_test: TransactionTestFiller,
     pre: Alloc,

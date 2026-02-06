@@ -363,7 +363,11 @@ def calculate_total_blob_gas(tx: Transaction) -> U64:
         The total blob gas for the transaction.
 
     """
+    from ..transactions import FrameTransaction
+
     if isinstance(tx, BlobTransaction):
+        return GAS_PER_BLOB * U64(len(tx.blob_versioned_hashes))
+    elif isinstance(tx, FrameTransaction):
         return GAS_PER_BLOB * U64(len(tx.blob_versioned_hashes))
     else:
         return U64(0)

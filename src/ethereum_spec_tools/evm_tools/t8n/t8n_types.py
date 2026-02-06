@@ -14,7 +14,7 @@ from ethereum.crypto.hash import Hash32, keccak256
 from ethereum.utils.hexadecimal import hex_to_bytes, hex_to_u256, hex_to_uint
 
 from ..loaders.transaction_loader import TransactionLoad, UnsupportedTxError
-from ..utils import FatalError, encode_to_hex, secp256k1_sign
+from ..utils import FatalError, encode_to_hex, parse_hex_or_int, secp256k1_sign
 
 if TYPE_CHECKING:
     from . import T8N
@@ -159,23 +159,34 @@ class Txs:
         t8n = self.t8n
 
         # for idx, json_tx in enumerate(self.data):
-        raw_tx["gasLimit"] = raw_tx["gas"]
-        raw_tx["data"] = raw_tx["input"]
-        if "to" not in raw_tx or raw_tx["to"] is None:
-            raw_tx["to"] = ""
+        tx_type = parse_hex_or_int(
+            raw_tx.get("type", "0x0"), Uint
+        )
 
-        # tf tool might provide None instead of 0
-        # for v, r, s
-        raw_tx["v"] = raw_tx.get("v") or raw_tx.get("y_parity") or "0x00"
-        raw_tx["r"] = raw_tx.get("r") or "0x00"
-        raw_tx["s"] = raw_tx.get("s") or "0x00"
+        # EIP-8141: Frame transactions have different field layout
+        if tx_type == Uint(6) and "frames" in raw_tx:
+            # Frame transactions don't have gas/input/to/value/v/r/s
+            pass
+        else:
+            raw_tx["gasLimit"] = raw_tx["gas"]
+            raw_tx["data"] = raw_tx["input"]
+            if "to" not in raw_tx or raw_tx["to"] is None:
+                raw_tx["to"] = ""
 
-        v = hex_to_u256(raw_tx["v"])
-        r = hex_to_u256(raw_tx["r"])
-        s = hex_to_u256(raw_tx["s"])
+            # tf tool might provide None instead of 0
+            # for v, r, s
+            raw_tx["v"] = (
+                raw_tx.get("v") or raw_tx.get("y_parity") or "0x00"
+            )
+            raw_tx["r"] = raw_tx.get("r") or "0x00"
+            raw_tx["s"] = raw_tx.get("s") or "0x00"
 
-        if "secretKey" in raw_tx and v == r == s == 0:
-            self.sign_transaction(raw_tx)
+            v = hex_to_u256(raw_tx["v"])
+            r = hex_to_u256(raw_tx["r"])
+            s = hex_to_u256(raw_tx["s"])
+
+            if "secretKey" in raw_tx and v == r == s == 0:
+                self.sign_transaction(raw_tx)
 
         tx = TransactionLoad(raw_tx, t8n.fork).read()
         self.all_txs.append(tx)

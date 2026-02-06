@@ -69,7 +69,7 @@ def test_caller_origin_modes(
     )
 
     expected_address = (
-        sender if expected_caller == "sender" else Spec.ENTRY_POINT
+        sender if isinstance(expected_caller, str) else expected_caller
     )
     target_code = caller_origin_guard(
         expected_address,
@@ -95,19 +95,18 @@ def test_caller_origin_modes(
     tx = make_frame_tx(
         sender=sender,
         frames=frames,
-        max_fee_per_gas=0,
+        max_fee_per_gas=7,
         max_priority_fee_per_gas=0,
     )
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
                 nonce=1,
-                balance=10**18,
             ),
             target: Account(storage={CALLER_SLOT: 1}),
         },
@@ -137,7 +136,7 @@ def test_caller_origin_verify_mode(
     tx = make_frame_tx(
         sender=sender,
         frames=frames,
-        max_fee_per_gas=0,
+        max_fee_per_gas=7,
         max_priority_fee_per_gas=0,
     )
 
@@ -147,10 +146,10 @@ def test_caller_origin_verify_mode(
     )
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
-        post={sender: Account(code=sender_code, nonce=1, balance=10**18)},
+        post={sender: Account(code=sender_code, nonce=1)},
     )
 
 
@@ -189,25 +188,25 @@ def test_null_target_calls_sender(
     tx = make_frame_tx(
         sender=sender,
         frames=frames,
-        max_fee_per_gas=0,
+        max_fee_per_gas=7,
         max_priority_fee_per_gas=0,
     )
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={
             sender: Account(
                 code=sender_code,
                 nonce=1,
-                balance=10**18,
                 storage={CALLER_SLOT: 1},
             ),
         },
     )
 
 
+@pytest.mark.exception_test
 def test_invalid_approve_scope(
     state_test: StateTestFiller,
     pre: Alloc,
@@ -228,13 +227,14 @@ def test_invalid_approve_scope(
     tx.error = TransactionException.TYPE_6_INVALID_FRAME_EXECUTION
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={},
     )
 
 
+@pytest.mark.exception_test
 def test_invalid_approve_scope_zero_non_sender(
     state_test: StateTestFiller,
     pre: Alloc,
@@ -254,7 +254,7 @@ def test_invalid_approve_scope_zero_non_sender(
     tx = make_frame_tx(sender=sender, frames=frames)
     tx.error = TransactionException.TYPE_6_INVALID_APPROVAL
 
-    state_test(env=Environment(base_fee_per_gas=0), pre=pre, tx=tx, post={})
+    state_test(env=Environment(), pre=pre, tx=tx, post={})
 
 
 def test_approve_return_data_and_call_status(
@@ -308,7 +308,7 @@ def test_approve_return_data_and_call_status(
     tx = make_frame_tx(
         sender=sender,
         frames=frames,
-        max_fee_per_gas=0,
+        max_fee_per_gas=7,
         max_priority_fee_per_gas=0,
     )
 
@@ -317,14 +317,13 @@ def test_approve_return_data_and_call_status(
     )
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
                 nonce=1,
-                balance=10**18,
             ),
             caller: Account(
                 storage={
@@ -410,7 +409,7 @@ def test_txparamload_fields(
 
     gas_summary = frame_tx_gas_summary(frames)
     tx_gas_limit = gas_summary.intrinsic_gas
-    sig_hash = int.from_bytes(compute_sig_hash(tx), byteorder="big")
+    _sig_hash = int.from_bytes(compute_sig_hash(tx), byteorder="big")
 
     class Ctx:
         sender_int = int.from_bytes(bytes(sender), byteorder="big")
@@ -425,9 +424,9 @@ def test_txparamload_fields(
         )
         frame_gas_limit = frames[1].gas_limit
         frame_mode = frames[1].mode
-        sig_hash = sig_hash
+        sig_hash = _sig_hash
         max_cost = max_cost(
-            base_fee=1,
+            base_fee=7,
             tx_gas_limit=tx_gas_limit,
             max_fee=tx.max_fee_per_gas,
             max_priority=tx.max_priority_fee_per_gas,
@@ -436,14 +435,13 @@ def test_txparamload_fields(
     expected_value = case.expected(Ctx)
 
     state_test(
-        env=Environment(base_fee_per_gas=1),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
                 nonce=1,
-                balance=10**18,
             ),
             txparam_target: Account(storage={TXPARAM_SLOT: expected_value}),
         },
@@ -500,19 +498,18 @@ def test_txparam_data_access(
     tx = make_frame_tx(
         sender=sender,
         frames=frames,
-        max_fee_per_gas=0,
+        max_fee_per_gas=7,
         max_priority_fee_per_gas=0,
     )
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
                 nonce=1,
-                balance=10**18,
             ),
             target: Account(
                 storage={SIZE_SLOT: expected_size, DATA_SLOT: expected_word}
@@ -552,19 +549,18 @@ def test_txparam_status_previous_frames(
     tx = make_frame_tx(
         sender=sender,
         frames=frames,
-        max_fee_per_gas=0,
+        max_fee_per_gas=7,
         max_priority_fee_per_gas=0,
     )
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
                 nonce=1,
-                balance=10**18,
             ),
             status_reader: Account(
                 storage={STATUS_SLOT: Spec.STATUS_APPROVED_BOTH}
@@ -577,7 +573,7 @@ def test_txparam_status_current_frame_invalid(
     state_test: StateTestFiller,
     pre: Alloc,
 ) -> None:
-    """TXPARAMLOAD(0x15) on current frame should exceptional halt."""
+    """TXPARAMLOAD(0x15) on current frame should exceptional halt the frame."""
     sender = pre.fund_eoa(amount=10**18)
     pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_BOTH), address=sender
@@ -602,16 +598,26 @@ def test_txparam_status_current_frame_invalid(
         ),
     ]
     tx = make_frame_tx(sender=sender, frames=frames)
-    tx.error = TransactionException.TYPE_6_INVALID_FRAME_EXECUTION
+    # The SENDER frame fails (ExceptionalHalt) but the tx still succeeds
+    # since the sender approved BOTH in the VERIFY frame.
 
-    state_test(env=Environment(base_fee_per_gas=0), pre=pre, tx=tx, post={})
+    state_test(
+        env=Environment(),
+        pre=pre,
+        tx=tx,
+        post={
+            # The SENDER frame's SSTORE is reverted due to ExceptionalHalt,
+            # so STATUS_SLOT remains 0.
+            reader: Account(storage={STATUS_SLOT: 0}),
+        },
+    )
 
 
 def test_txparam_invalid_selector(
     state_test: StateTestFiller,
     pre: Alloc,
 ) -> None:
-    """Invalid TXPARAM selector should exceptional halt."""
+    """Invalid TXPARAM selector should exceptional halt the frame."""
     sender = pre.fund_eoa(amount=10**18)
     pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_BOTH), address=sender
@@ -636,16 +642,20 @@ def test_txparam_invalid_selector(
         ),
     ]
     tx = make_frame_tx(sender=sender, frames=frames)
-    tx.error = TransactionException.TYPE_6_INVALID_FRAME_EXECUTION
 
-    state_test(env=Environment(base_fee_per_gas=0), pre=pre, tx=tx, post={})
+    state_test(
+        env=Environment(),
+        pre=pre,
+        tx=tx,
+        post={reader: Account(storage={TXPARAM_SLOT: 0})},
+    )
 
 
 def test_txparam_out_of_bounds_frame_index(
     state_test: StateTestFiller,
     pre: Alloc,
 ) -> None:
-    """Out-of-bounds frame index should exceptional halt."""
+    """Out-of-bounds frame index should exceptional halt the frame."""
     sender = pre.fund_eoa(amount=10**18)
     pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_BOTH), address=sender
@@ -670,9 +680,13 @@ def test_txparam_out_of_bounds_frame_index(
         ),
     ]
     tx = make_frame_tx(sender=sender, frames=frames)
-    tx.error = TransactionException.TYPE_6_INVALID_FRAME_EXECUTION
 
-    state_test(env=Environment(base_fee_per_gas=0), pre=pre, tx=tx, post={})
+    state_test(
+        env=Environment(),
+        pre=pre,
+        tx=tx,
+        post={reader: Account(storage={TXPARAM_SLOT: 0})},
+    )
 
 
 def test_null_target_verify_mode(
@@ -702,7 +716,7 @@ def test_null_target_verify_mode(
     tx = make_frame_tx(
         sender=sender,
         frames=frames,
-        max_fee_per_gas=0,
+        max_fee_per_gas=7,
         max_priority_fee_per_gas=0,
     )
     tx.expected_receipt = TransactionReceipt(
@@ -714,14 +728,13 @@ def test_null_target_verify_mode(
     )
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
                 nonce=1,
-                balance=10**18,
             ),
         },
     )
@@ -731,7 +744,7 @@ def test_txparam_status_future_frame_invalid(
     state_test: StateTestFiller,
     pre: Alloc,
 ) -> None:
-    """TXPARAMLOAD(0x15) on a future frame index halts."""
+    """TXPARAMLOAD(0x15) on a future frame index halts the frame."""
     sender = pre.fund_eoa(amount=10**18)
     pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_BOTH),
@@ -765,13 +778,12 @@ def test_txparam_status_future_frame_invalid(
         ),
     ]
     tx = make_frame_tx(sender=sender, frames=frames)
-    tx.error = TransactionException.TYPE_6_INVALID_FRAME_EXECUTION
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
-        post={},
+        post={reader: Account(storage={STATUS_SLOT: 0})},
     )
 
 
@@ -824,12 +836,12 @@ def test_approve_in_subcall_propagation(
     tx = make_frame_tx(
         sender=sender,
         frames=frames,
-        max_fee_per_gas=0,
+        max_fee_per_gas=7,
         max_priority_fee_per_gas=0,
     )
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={
@@ -878,12 +890,12 @@ def test_txparamcopy_out_of_bounds_offset(
     tx = make_frame_tx(
         sender=sender,
         frames=frames,
-        max_fee_per_gas=0,
+        max_fee_per_gas=7,
         max_priority_fee_per_gas=0,
     )
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={
@@ -928,12 +940,12 @@ def test_verify_data_elision_from_other_frame(
     tx = make_frame_tx(
         sender=sender,
         frames=frames,
-        max_fee_per_gas=0,
+        max_fee_per_gas=7,
         max_priority_fee_per_gas=0,
     )
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={

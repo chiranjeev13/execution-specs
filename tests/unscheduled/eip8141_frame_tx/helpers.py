@@ -14,6 +14,8 @@ from execution_testing import (
     Transaction,
 )
 
+from execution_testing import Account
+
 from .spec import Spec
 
 
@@ -80,7 +82,7 @@ def make_frame_tx(
     frames: Sequence[Frame],
     chain_id: int = 1,
     nonce: int = 0,
-    max_fee_per_gas: int = 1,
+    max_fee_per_gas: int = 7,
     max_priority_fee_per_gas: int = 0,
     max_fee_per_blob_gas: int = 0,
     blob_versioned_hashes: Sequence[Hash] | None = None,
@@ -113,7 +115,10 @@ def approve_bytecode(
     return_data = Bytes(return_data)
     if len(return_data) == 0:
         return Op.APPROVE(scope, 0, 0)
-    return Op.MSTORE(0, return_data) + Op.APPROVE(scope, 0, len(return_data))
+    # MSTORE stores a 32-byte big-endian value, so the data lands
+    # at offset (32 - len(return_data)) within the 32-byte word.
+    data_offset = 32 - len(return_data)
+    return Op.MSTORE(0, return_data) + Op.APPROVE(scope, data_offset, len(return_data))
 
 
 def compute_sig_hash(tx: Transaction) -> Bytes:

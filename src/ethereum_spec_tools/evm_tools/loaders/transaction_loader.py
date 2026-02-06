@@ -125,6 +125,32 @@ class TransactionLoad:
             for blob_hash in self.raw.get("blobVersionedHashes")
         ]
 
+    def json_to_sender(self) -> Any:
+        """Get the sender address for a frame transaction."""
+        return self.fork.hex_to_address(self.raw.get("sender"))
+
+    def json_to_frames(self) -> Any:
+        """Get the frames for a frame transaction."""
+        frames = []
+        for frame_data in self.raw.get("frames", []):
+            mode = parse_hex_or_int(frame_data.get("mode"), Uint)
+            target_raw = frame_data.get("target")
+            if target_raw is None or target_raw == "" or target_raw == "0x":
+                target = Bytes0(b"")
+            else:
+                target = self.fork.hex_to_address(target_raw)
+            gas_limit = parse_hex_or_int(frame_data.get("gasLimit"), Uint)
+            data = hex_to_bytes(frame_data.get("data", "0x"))
+            frames.append(
+                self.fork.Frame(
+                    mode=mode,
+                    target=target,
+                    gas_limit=gas_limit,
+                    data=data,
+                )
+            )
+        return tuple(frames)
+
     def json_to_v(self) -> U256:
         """Get the v value of the transaction."""
         return hex_to_u256(
@@ -165,7 +191,10 @@ class TransactionLoad:
         """Convert json transaction data to a transaction object."""
         if "type" in self.raw:
             tx_type = parse_hex_or_int(self.raw.get("type"), Uint)
-            if tx_type == Uint(4):
+            if tx_type == Uint(6):
+                tx_cls = self.fork.FrameTransaction
+                tx_byte_prefix = b"\x06"
+            elif tx_type == Uint(4):
                 tx_cls = self.fork.SetCodeTransaction
                 tx_byte_prefix = b"\x04"
             elif tx_type == Uint(3):

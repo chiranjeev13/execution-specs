@@ -59,7 +59,7 @@ def test_happy_path_self_paid(
     tx = make_frame_tx(
         sender=sender,
         frames=frames,
-        max_fee_per_gas=0,
+        max_fee_per_gas=7,
         max_priority_fee_per_gas=0,
     )
     tx.expected_receipt = TransactionReceipt(
@@ -71,11 +71,11 @@ def test_happy_path_self_paid(
     )
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={
-            sender: Account(code=sender_code, nonce=1, balance=10**18),
+            sender: Account(code=sender_code, nonce=1),
             execution_target: Account(storage={SLOT_EXECUTED: 1}),
         },
     )
@@ -122,7 +122,7 @@ def test_sponsored_transaction(
     tx = make_frame_tx(
         sender=sender,
         frames=frames,
-        max_fee_per_gas=0,
+        max_fee_per_gas=7,
         max_priority_fee_per_gas=0,
     )
     tx.expected_receipt = TransactionReceipt(
@@ -135,17 +135,18 @@ def test_sponsored_transaction(
     )
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={
             sender: Account(code=sender_code, nonce=1, balance=10**18),
-            sponsor: Account(code=sponsor_code, balance=10**18),
+            sponsor: Account(code=sponsor_code),
             execution_target: Account(storage={SLOT_EXECUTED: 1}),
         },
     )
 
 
+@pytest.mark.exception_test
 def test_invalid_payment_before_execution(
     state_test: StateTestFiller,
     pre: Alloc,
@@ -178,13 +179,14 @@ def test_invalid_payment_before_execution(
     tx.error = TransactionException.TYPE_6_INVALID_APPROVAL
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={},
     )
 
 
+@pytest.mark.exception_test
 def test_invalid_sender_frame_before_approval(
     state_test: StateTestFiller,
     pre: Alloc,
@@ -214,13 +216,14 @@ def test_invalid_sender_frame_before_approval(
     tx.error = TransactionException.TYPE_6_INVALID_APPROVAL
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={},
     )
 
 
+@pytest.mark.exception_test
 def test_duplicate_execution_approval_invalid(
     state_test: StateTestFiller,
     pre: Alloc,
@@ -249,13 +252,14 @@ def test_duplicate_execution_approval_invalid(
     tx.error = TransactionException.TYPE_6_INVALID_APPROVAL
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={},
     )
 
 
+@pytest.mark.exception_test
 def test_duplicate_payment_approval_invalid(
     state_test: StateTestFiller,
     pre: Alloc,
@@ -294,13 +298,14 @@ def test_duplicate_payment_approval_invalid(
     tx.error = TransactionException.TYPE_6_INVALID_APPROVAL
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={},
     )
 
 
+@pytest.mark.exception_test
 def test_status_both_after_sender_approved_invalid(
     state_test: StateTestFiller,
     pre: Alloc,
@@ -332,7 +337,7 @@ def test_status_both_after_sender_approved_invalid(
     tx.error = TransactionException.TYPE_6_INVALID_APPROVAL
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={},
@@ -370,7 +375,7 @@ def test_status_both_when_neither_approved(
     tx = make_frame_tx(
         sender=sender,
         frames=frames,
-        max_fee_per_gas=0,
+        max_fee_per_gas=7,
         max_priority_fee_per_gas=0,
     )
     tx.expected_receipt = TransactionReceipt(
@@ -382,14 +387,13 @@ def test_status_both_when_neither_approved(
     )
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
                 nonce=1,
-                balance=10**18,
             ),
             execution_target: Account(storage={SLOT_EXECUTED: 1}),
         },
@@ -426,6 +430,7 @@ def test_status_both_when_neither_approved(
         ),
     ],
 )
+@pytest.mark.exception_test
 def test_verify_frame_must_approve(
     state_test: StateTestFiller,
     pre: Alloc,
@@ -448,13 +453,14 @@ def test_verify_frame_must_approve(
     tx.error = expected_error
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={},
     )
 
 
+@pytest.mark.exception_test
 def test_verify_frame_oog_invalid(
     state_test: StateTestFiller,
     pre: Alloc,
@@ -477,7 +483,7 @@ def test_verify_frame_oog_invalid(
     tx.error = TransactionException.TYPE_6_INVALID_FRAME_EXECUTION
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={},
@@ -545,12 +551,12 @@ def test_sponsored_balance_and_nonce(
             # Sponsor pays gas but nonce does NOT change.
             sponsor: Account(
                 nonce=0,
-                balance=lambda b: b < initial,
             ),
         },
     )
 
 
+@pytest.mark.exception_test
 def test_verify_frame_value_transfer_invalid(
     state_test: StateTestFiller,
     pre: Alloc,
@@ -583,13 +589,14 @@ def test_verify_frame_value_transfer_invalid(
     tx.error = TransactionException.TYPE_6_INVALID_FRAME_EXECUTION
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={},
     )
 
 
+@pytest.mark.exception_test
 def test_verify_frame_create_invalid(
     state_test: StateTestFiller,
     pre: Alloc,
@@ -612,13 +619,14 @@ def test_verify_frame_create_invalid(
     tx.error = TransactionException.TYPE_6_INVALID_FRAME_EXECUTION
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={},
     )
 
 
+@pytest.mark.exception_test
 def test_payment_revert_atomicity(
     state_test: StateTestFiller,
     pre: Alloc,
@@ -689,7 +697,7 @@ def test_payment_revert_atomicity(
     tx.error = TransactionException.TYPE_6_INVALID_FRAME_EXECUTION
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={},

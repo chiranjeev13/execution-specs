@@ -259,6 +259,16 @@ class ForkLoad:
         return self._module("transactions").SetCodeTransaction
 
     @property
+    def FrameTransaction(self) -> Any:
+        """Frame transaction class of the fork."""
+        return self._module("transactions").FrameTransaction
+
+    @property
+    def Frame(self) -> Any:
+        """Frame class of the fork."""
+        return self._module("transactions").Frame
+
+    @property
     def Withdrawal(self) -> Any:
         """Withdrawal class of the fork."""
         return self._module("blocks").Withdrawal

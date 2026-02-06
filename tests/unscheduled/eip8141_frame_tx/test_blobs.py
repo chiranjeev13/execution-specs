@@ -93,7 +93,6 @@ def test_frame_tx_with_blobs(
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
                 nonce=1,
-                balance=10**18,
             ),
             txparam_target: Account(
                 storage={
@@ -173,7 +172,6 @@ def test_frame_tx_with_multiple_blobs(
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
                 nonce=1,
-                balance=10**18,
             ),
             txparam_target: Account(
                 storage={
@@ -185,6 +183,7 @@ def test_frame_tx_with_multiple_blobs(
     )
 
 
+@pytest.mark.exception_test
 def test_blob_fee_below_base_fee_invalid(
     state_test: StateTestFiller,
     pre: Alloc,
@@ -224,7 +223,10 @@ def test_blob_fee_below_base_fee_invalid(
         max_fee_per_blob_gas=too_low,
         blob_versioned_hashes=[blob.versioned_hash],
     )
-    tx.error = TransactionException.INSUFFICIENT_MAX_FEE_PER_BLOB_GAS
+    if too_low == 0:
+        tx.error = TransactionException.TYPE_6_INVALID_BLOB_FIELDS
+    else:
+        tx.error = TransactionException.INSUFFICIENT_MAX_FEE_PER_BLOB_GAS
 
     state_test(
         env=Environment(

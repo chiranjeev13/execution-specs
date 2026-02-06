@@ -374,7 +374,14 @@ def generic_call(
     else:
         incorporate_child_on_success(evm, child_evm)
         evm.return_data = child_evm.output
-        push(evm.stack, U256(1))
+        # EIP-8141: APPROVE extends CALL status codes to 2-4
+        if (
+            child_evm.approve_status is not None
+            and child_evm.approve_status > 1
+        ):
+            push(evm.stack, U256(child_evm.approve_status))
+        else:
+            push(evm.stack, U256(1))
 
     actual_output_size = min(memory_output_size, U256(len(child_evm.output)))
     memory_write(

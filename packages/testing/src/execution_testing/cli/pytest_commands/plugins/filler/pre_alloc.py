@@ -231,9 +231,15 @@ class Alloc(BaseAlloc):
             assert self._alloc_mode == AllocMode.PERMISSIVE, (
                 "address parameter is not supported"
             )
-            assert address not in self, (
-                f"address {address} already in allocation"
-            )
+            if address in self:
+                # Allow re-deploying at an existing address (e.g., for
+                # EIP-8141 smart account setup: fund_eoa then deploy code).
+                # Preserve existing balance and nonce if not overridden.
+                existing = self[address]
+                if balance == 0 and existing.balance is not None:
+                    balance = existing.balance
+                if nonce == 1 and existing.nonce is not None:
+                    nonce = existing.nonce
             contract_address = address
         else:
             contract_address = next(self._contract_address_iterator)

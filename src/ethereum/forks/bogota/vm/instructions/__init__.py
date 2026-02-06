@@ -26,6 +26,7 @@ from . import log as log_instructions
 from . import memory as memory_instructions
 from . import stack as stack_instructions
 from . import storage as storage_instructions
+from . import frame_tx as frame_tx_instructions
 from . import system as system_instructions
 
 
@@ -202,6 +203,12 @@ class Ops(enum.Enum):
     LOG3 = 0xA3
     LOG4 = 0xA4
 
+    # Frame Transaction Opcodes (EIP-8141)
+    APPROVE = 0xAA
+    TXPARAMLOAD = 0xB0
+    TXPARAMSIZE = 0xB1
+    TXPARAMCOPY = 0xB2
+
     # System Operations
     CREATE = 0xF0
     CALL = 0xF1
@@ -355,6 +362,10 @@ op_implementation: Dict[Ops, Callable] = {
     Ops.LOG2: log_instructions.log2,
     Ops.LOG3: log_instructions.log3,
     Ops.LOG4: log_instructions.log4,
+    Ops.APPROVE: frame_tx_instructions.approve,
+    Ops.TXPARAMLOAD: frame_tx_instructions.txparamload,
+    Ops.TXPARAMSIZE: frame_tx_instructions.txparamsize,
+    Ops.TXPARAMCOPY: frame_tx_instructions.txparamcopy,
     Ops.CREATE: system_instructions.create,
     Ops.RETURN: system_instructions.return_,
     Ops.CALL: system_instructions.call,

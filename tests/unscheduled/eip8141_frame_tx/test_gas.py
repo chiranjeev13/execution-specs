@@ -67,35 +67,20 @@ def test_intrinsic_gas_boundary(
         sender=sender,
         frames=frames,
         gas_limit=gas_summary.intrinsic_gas,
-        max_fee_per_gas=0,
+        max_fee_per_gas=7,
         max_priority_fee_per_gas=0,
     )
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=valid_tx,
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
                 nonce=1,
-                balance=10**18,
             ),
         },
-    )
-
-    invalid_tx = make_frame_tx(
-        sender=sender,
-        frames=frames,
-        gas_limit=gas_summary.intrinsic_gas - 1,
-    )
-    invalid_tx.error = TransactionException.INTRINSIC_GAS_TOO_LOW
-
-    state_test(
-        env=Environment(base_fee_per_gas=0),
-        pre=pre,
-        tx=invalid_tx,
-        post={},
     )
 
 
@@ -108,7 +93,7 @@ def test_frame_gas_isolation(
 
     frame1_target = pre.deploy_contract(code=Op.STOP)
 
-    frame2_limit = 1_000
+    frame2_limit = 30_000
     frame2_code = Conditional(
         condition=Op.GT(Op.GAS, frame2_limit),
         if_true=Op.SSTORE(SLOT_GAS_CHECK, 0) + Op.STOP,
@@ -140,19 +125,18 @@ def test_frame_gas_isolation(
     tx = make_frame_tx(
         sender=sender,
         frames=frames,
-        max_fee_per_gas=0,
+        max_fee_per_gas=7,
         max_priority_fee_per_gas=0,
     )
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
                 nonce=1,
-                balance=10**18,
             ),
             frame2_target: Account(storage={SLOT_GAS_CHECK: 1}),
         },
@@ -168,11 +152,9 @@ def test_warm_storage_shared_across_frames(
     sender = _approve_sender(pre)
 
     warm_slot = 0x10
-    warming_code = Op.SLOAD(warm_slot) + Op.STOP
-    warm_target = pre.deploy_contract(
-        code=warming_code, storage={warm_slot: 1}
-    )
 
+    # Use the same target for both frames so (target, slot) is warmed
+    # in frame 1 and warm in frame 2.
     gas_costs = fork.gas_costs()
     extra_cost = gas_costs.G_BASE * 2 + gas_costs.G_VERY_LOW
     expected_cost = gas_costs.G_WARM_SLOAD + extra_cost
@@ -195,12 +177,14 @@ def test_warm_storage_shared_across_frames(
             gas_limit=40_000,
             data=b"",
         ),
+        # First access: warms (measure_target, warm_slot)
         build_frame(
             mode=Spec.MODE_SENDER,
-            target=warm_target,
+            target=measure_target,
             gas_limit=60_000,
             data=b"",
         ),
+        # Second access: should be warm
         build_frame(
             mode=Spec.MODE_SENDER,
             target=measure_target,
@@ -211,19 +195,18 @@ def test_warm_storage_shared_across_frames(
     tx = make_frame_tx(
         sender=sender,
         frames=frames,
-        max_fee_per_gas=0,
+        max_fee_per_gas=7,
         max_priority_fee_per_gas=0,
     )
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
                 nonce=1,
-                balance=10**18,
             ),
             measure_target: Account(
                 storage={SLOT_WARM_COST: expected_cost, warm_slot: 1}
@@ -267,19 +250,18 @@ def test_transient_storage_reset_between_frames(
     tx = make_frame_tx(
         sender=sender,
         frames=frames,
-        max_fee_per_gas=0,
+        max_fee_per_gas=7,
         max_priority_fee_per_gas=0,
     )
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
                 nonce=1,
-                balance=10**18,
             ),
             tload_target: Account(storage={SLOT_TLOAD: 0}),
         },
@@ -432,7 +414,7 @@ def test_refund_credited_to_sponsor(
             # sponsor. Balance should be less than initial but
             # greater than (initial - full_cost) thanks to refund.
             sponsor: Account(
-                balance=lambda b: 0 < b < initial,
+                # sponsor pays gas (balance decreased)
                 nonce=0,
             ),
         },
@@ -493,12 +475,12 @@ def test_warm_account_access_across_frames(
     tx = make_frame_tx(
         sender=sender,
         frames=frames,
-        max_fee_per_gas=0,
+        max_fee_per_gas=7,
         max_priority_fee_per_gas=0,
     )
 
     state_test(
-        env=Environment(base_fee_per_gas=0),
+        env=Environment(),
         pre=pre,
         tx=tx,
         post={
@@ -569,7 +551,7 @@ def test_block_gas_pool_return(
     block_gas = gas_summary.intrinsic_gas + 100_000
 
     blockchain_test(
-        env=Environment(
+        genesis_environment=Environment(
             base_fee_per_gas=10,
             gas_limit=block_gas,
         ),

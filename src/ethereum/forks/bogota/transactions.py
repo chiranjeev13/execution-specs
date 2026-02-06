@@ -21,6 +21,8 @@ from ethereum.exceptions import (
 )
 
 from .exceptions import (
+    FrameTransactionInvalidBlobFieldsError,
+    FrameTransactionInvalidFormatError,
     InitCodeTooLargeError,
     TransactionGasLimitExceededError,
     TransactionTypeError,
@@ -65,6 +67,120 @@ Gas cost for including a storage key in the access list of a transaction.
 """
 
 TX_MAX_GAS_LIMIT = Uint(16_777_216)
+
+FRAME_TX_TYPE = Uint(0x06)
+"""
+The [EIP-2718] transaction type identifier for frame transactions.
+
+[EIP-2718]: https://eips.ethereum.org/EIPS/eip-2718
+"""
+
+FRAME_TX_INTRINSIC_COST = Uint(15000)
+"""
+Base intrinsic cost for frame transactions, as defined in [EIP-8141].
+
+[EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+"""
+
+ENTRY_POINT = Address(b"\x00" * 19 + b"\xaa")
+"""
+The entry point address (``0xAA``) used as the caller for ``DEFAULT``
+and ``VERIFY`` mode frames.
+
+[EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+"""
+
+MAX_FRAMES = Uint(1000)
+"""
+Maximum number of frames allowed in a frame transaction.
+
+[EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+"""
+
+
+@slotted_freezable
+@dataclass
+class Frame:
+    """
+    A single execution frame within a frame transaction, as defined in
+    [EIP-8141].
+
+    [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+    """
+
+    mode: Uint
+    """
+    The execution mode: 0 = DEFAULT, 1 = VERIFY, 2 = SENDER.
+    """
+
+    target: Address | Bytes0
+    """
+    The target address of the frame. If ``Bytes0(b"")``, resolves to
+    ``tx.sender`` at execution time.
+    """
+
+    gas_limit: Uint
+    """
+    Gas allocated to this frame.
+    """
+
+    data: Bytes
+    """
+    The calldata for this frame.
+    """
+
+
+@slotted_freezable
+@dataclass
+class FrameTransaction:
+    """
+    The transaction type added in [EIP-8141].
+
+    Frame transactions allow arbitrary validation, execution, and gas payment
+    logic defined by the account's code.
+
+    [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+    """
+
+    chain_id: U256
+    """
+    The ID of the chain on which this transaction is executed.
+    """
+
+    nonce: U64
+    """
+    A scalar value equal to the number of transactions sent by the sender.
+    """
+
+    sender: Address
+    """
+    The explicit sender address of the transaction.
+    """
+
+    frames: Tuple[Frame, ...]
+    """
+    The ordered list of execution frames.
+    """
+
+    max_priority_fee_per_gas: Uint
+    """
+    The maximum priority fee per gas.
+    """
+
+    max_fee_per_gas: Uint
+    """
+    The maximum fee per gas.
+    """
+
+    max_fee_per_blob_gas: U256
+    """
+    The maximum fee per blob gas.
+    """
+
+    blob_versioned_hashes: Tuple[VersionedHash, ...]
+    """
+    Versioned hashes of blobs included in the transaction.
+    """
 
 
 @slotted_freezable
@@ -474,6 +590,7 @@ Transaction = (
     | FeeMarketTransaction
     | BlobTransaction
     | SetCodeTransaction
+    | FrameTransaction
 )
 """
 Union type representing any valid transaction type.
@@ -498,6 +615,8 @@ def encode_transaction(tx: Transaction) -> LegacyTransaction | Bytes:
         return b"\x03" + rlp.encode(tx)
     elif isinstance(tx, SetCodeTransaction):
         return b"\x04" + rlp.encode(tx)
+    elif isinstance(tx, FrameTransaction):
+        return b"\x06" + rlp.encode(tx)
     else:
         raise Exception(f"Unable to encode transaction of type {type(tx)}")
 
@@ -519,6 +638,8 @@ def decode_transaction(tx: LegacyTransaction | Bytes) -> Transaction:
             return rlp.decode_to(BlobTransaction, tx[1:])
         elif tx[0] == 4:
             return rlp.decode_to(SetCodeTransaction, tx[1:])
+        elif tx[0] == 6:
+            return rlp.decode_to(FrameTransaction, tx[1:])
         else:
             raise TransactionTypeError(tx[0])
     else:
@@ -556,6 +677,9 @@ def validate_transaction(tx: Transaction) -> Tuple[Uint, Uint]:
     """
     from .vm.interpreter import MAX_INIT_CODE_SIZE
 
+    if isinstance(tx, FrameTransaction):
+        return validate_frame_transaction(tx)
+
     intrinsic_gas, calldata_floor_gas_cost = calculate_intrinsic_cost(tx)
     if max(intrinsic_gas, calldata_floor_gas_cost) > tx.gas:
         raise InsufficientTransactionGasError("Insufficient gas")
@@ -567,6 +691,115 @@ def validate_transaction(tx: Transaction) -> Tuple[Uint, Uint]:
         raise TransactionGasLimitExceededError("Gas limit too high")
 
     return intrinsic_gas, calldata_floor_gas_cost
+
+
+def validate_frame_transaction(
+    tx: FrameTransaction,
+) -> Tuple[Uint, Uint]:
+    """
+    Validate a frame transaction's static constraints as defined in
+    [EIP-8141].
+
+    Parameters
+    ----------
+    tx :
+        The frame transaction to validate.
+
+    Returns
+    -------
+    intrinsic_gas :
+        The intrinsic gas cost of the transaction.
+    calldata_floor_gas_cost :
+        Always ``Uint(0)`` for frame transactions (no EIP-7623 floor).
+
+    Raises
+    ------
+    FrameTransactionInvalidFormatError :
+        If any static constraint is violated.
+    FrameTransactionInvalidBlobFieldsError :
+        If blob field constraints are violated.
+    NonceOverflowError :
+        If the nonce exceeds ``2**64 - 1``.
+    InsufficientTransactionGasError :
+        If the gas limit is below the intrinsic cost.
+
+    [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+    """
+    # Static constraints
+    if len(tx.frames) == 0 or ulen(tx.frames) > MAX_FRAMES:
+        raise FrameTransactionInvalidFormatError(
+            "frame count must be > 0 and <= MAX_FRAMES"
+        )
+
+    if len(tx.sender) != 20:
+        raise FrameTransactionInvalidFormatError("sender must be 20 bytes")
+
+    for frame in tx.frames:
+        if frame.mode >= Uint(3):
+            raise FrameTransactionInvalidFormatError(
+                "frame mode must be < 3"
+            )
+        if not isinstance(frame.target, Bytes0) and len(frame.target) != 20:
+            raise FrameTransactionInvalidFormatError(
+                "frame target must be 20 bytes or empty"
+            )
+
+    # Blob field constraints
+    if len(tx.blob_versioned_hashes) == 0 and tx.max_fee_per_blob_gas != 0:
+        raise FrameTransactionInvalidBlobFieldsError(
+            "max_fee_per_blob_gas must be 0 when no blob hashes"
+        )
+    if len(tx.blob_versioned_hashes) > 0 and tx.max_fee_per_blob_gas == 0:
+        raise FrameTransactionInvalidBlobFieldsError(
+            "max_fee_per_blob_gas must be > 0 when blob hashes present"
+        )
+
+    # Nonce check
+    if U256(tx.nonce) >= U256(U64.MAX_VALUE):
+        raise NonceOverflowError("Nonce too high")
+
+    # Calculate intrinsic gas
+    intrinsic_gas = calculate_frame_tx_intrinsic_cost(tx)
+
+    return intrinsic_gas, Uint(0)
+
+
+def calculate_frame_tx_intrinsic_cost(tx: FrameTransaction) -> Uint:
+    """
+    Calculate the intrinsic gas cost for a frame transaction.
+
+    ``intrinsic = FRAME_TX_INTRINSIC_COST + calldata_cost(rlp(frames))
+    + sum(frame.gas_limit)``
+
+    Parameters
+    ----------
+    tx :
+        The frame transaction.
+
+    Returns
+    -------
+    intrinsic_gas : `Uint`
+        The intrinsic gas cost.
+
+    [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+    """
+    encoded_frames = rlp.encode(tx.frames)
+
+    zero_bytes = Uint(0)
+    for byte in encoded_frames:
+        if byte == 0:
+            zero_bytes += Uint(1)
+
+    non_zero_bytes = ulen(encoded_frames) - zero_bytes
+    # Standard calldata pricing: 4 gas per zero byte, 16 per non-zero byte
+    tokens_in_calldata = zero_bytes + non_zero_bytes * Uint(4)
+    calldata_cost = tokens_in_calldata * STANDARD_CALLDATA_TOKEN_COST
+
+    frame_gas_sum = Uint(0)
+    for frame in tx.frames:
+        frame_gas_sum += frame.gas_limit
+
+    return FRAME_TX_INTRINSIC_COST + calldata_cost + frame_gas_sum
 
 
 def calculate_intrinsic_cost(tx: Transaction) -> Tuple[Uint, Uint]:
@@ -596,6 +829,10 @@ def calculate_intrinsic_cost(tx: Transaction) -> Tuple[Uint, Uint]:
     """
     from .vm.eoa_delegation import PER_EMPTY_ACCOUNT_COST
     from .vm.gas import init_code_cost
+
+    if isinstance(tx, FrameTransaction):
+        intrinsic = calculate_frame_tx_intrinsic_cost(tx)
+        return intrinsic, Uint(0)
 
     zero_bytes = 0
     for byte in tx.data:
@@ -661,6 +898,9 @@ def recover_sender(chain_id: U64, tx: Transaction) -> Address:
     the address of the sender of the transaction. It raises an
     `InvalidSignatureError` if the signature values (r, s, v) are invalid.
     """
+    if isinstance(tx, FrameTransaction):
+        return tx.sender
+
     r, s = tx.r, tx.s
     if U256(0) >= r or r >= SECP256K1N:
         raise InvalidSignatureError("bad r")
@@ -869,6 +1109,53 @@ def signing_hash_7702(tx: SetCodeTransaction) -> Hash32:
             )
         )
     )
+
+
+def signing_hash_8141(tx: FrameTransaction) -> Hash32:
+    """
+    Compute the canonical signature hash for a frame transaction.
+
+    VERIFY frames have their data elided (set to empty bytes) in the hash
+    computation, as defined in [EIP-8141].
+
+    Parameters
+    ----------
+    tx :
+        The frame transaction.
+
+    Returns
+    -------
+    hash : `Hash32`
+        The signature hash.
+
+    [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+    """
+    elided_frames: list = []
+    for frame in tx.frames:
+        if frame.mode == Uint(1):  # VERIFY
+            elided_frames.append(
+                Frame(
+                    mode=frame.mode,
+                    target=frame.target,
+                    gas_limit=frame.gas_limit,
+                    data=Bytes(b""),
+                )
+            )
+        else:
+            elided_frames.append(frame)
+
+    modified_tx = FrameTransaction(
+        chain_id=tx.chain_id,
+        nonce=tx.nonce,
+        sender=tx.sender,
+        frames=tuple(elided_frames),
+        max_priority_fee_per_gas=tx.max_priority_fee_per_gas,
+        max_fee_per_gas=tx.max_fee_per_gas,
+        max_fee_per_blob_gas=tx.max_fee_per_blob_gas,
+        blob_versioned_hashes=tx.blob_versioned_hashes,
+    )
+
+    return keccak256(b"\x06" + rlp.encode(modified_tx))
 
 
 def get_transaction_hash(tx: Bytes | LegacyTransaction) -> Hash32:
