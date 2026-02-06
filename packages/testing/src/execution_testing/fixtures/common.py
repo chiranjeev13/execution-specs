@@ -22,6 +22,7 @@ from execution_testing.test_types.receipt_types import (
 )
 from execution_testing.test_types.transaction_types import (
     AuthorizationTupleGeneric,
+    FrameGeneric,
     Transaction,
 )
 
@@ -97,6 +98,19 @@ class FixtureAuthorizationTuple(
         """Sign the current object for further serialization."""
         # No-op, as the object is always already signed
         return
+
+
+class FixtureFrame(FrameGeneric[ZeroPaddedHexNumber]):
+    """Fixture variant of the EIP-8141 Frame type."""
+
+    # Allow extra fields: FixtureFrame is constructed from Frame via
+    # model_dump(), which may include extra fields.
+    model_config = CamelModel.model_config | {"extra": "ignore"}
+
+    @classmethod
+    def from_frame(cls, frame: FrameGeneric) -> "FixtureFrame":
+        """Return FixtureFrame from a Frame."""
+        return cls(**frame.model_dump())
 
 
 class FixtureTransactionLog(CamelModel, RLPSerializable):

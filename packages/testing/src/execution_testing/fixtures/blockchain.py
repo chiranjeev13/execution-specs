@@ -66,6 +66,7 @@ from execution_testing.test_types.transaction_types import (
 from .base import BaseFixture, FixtureFillingPhase
 from .common import (
     FixtureAuthorizationTuple,
+    FixtureFrame,
     FixtureBlobSchedule,
     FixtureTransactionReceipt,
 )
@@ -577,6 +578,7 @@ class FixtureTransaction(
     model_config = CamelModel.model_config | {"extra": "ignore"}
 
     authorization_list: List[FixtureAuthorizationTuple] | None = None
+    frames: List[FixtureFrame] | None = None
     initcodes: List[Bytes] | None = None
 
     @classmethod

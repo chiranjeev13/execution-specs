@@ -187,12 +187,12 @@ class AuthorizationTuple(AuthorizationTupleGeneric[HexNumber]):
                 pass
 
 
-class Frame(CamelModel):
+class FrameGeneric(CamelModel, Generic[NumberBoundTypeVar]):
     """EIP-8141 frame within a frame transaction."""
 
-    mode: HexNumber = Field(0)
+    mode: NumberBoundTypeVar = Field(0)  # type: ignore
     target: Address | None = None
-    gas_limit: HexNumber = Field(0)
+    gas_limit: NumberBoundTypeVar = Field(0)  # type: ignore
     data: Bytes = Field(Bytes(b""))
 
     def to_list(self, *, signing: bool = False) -> list:
@@ -208,15 +208,21 @@ class Frame(CamelModel):
             bytes(self.data) if not signing else b"",
         ]
 
-    def copy(self, **kwargs: Any) -> "Frame":
+    def copy(self, **kwargs: Any) -> "FrameGeneric":
         """Return a shallow copy with overridden fields."""
         data = self.model_dump()
         data.update(kwargs)
-        return Frame(**data)
+        return self.__class__(**data)
 
     def rlp(self) -> Bytes:
         """Return RLP-encoded bytes for this frame."""
         return Bytes(eth_rlp.encode(self.to_list()))
+
+
+class Frame(FrameGeneric[HexNumber]):
+    """EIP-8141 frame within a frame transaction (test authoring)."""
+
+    pass
 
 
 class TransactionGeneric(BaseModel, Generic[NumberBoundTypeVar]):
