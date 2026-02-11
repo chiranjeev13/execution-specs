@@ -89,7 +89,6 @@ class MessageCallOutput:
           4. `accounts_to_delete`: Contracts which have self-destructed.
           5. `error`: The error from the execution if any.
           6. `return_data`: The output of the execution.
-          7. `approve_status`: The APPROVE status code (2-4) if set.
     """
 
     gas_left: Uint
@@ -98,7 +97,6 @@ class MessageCallOutput:
     accounts_to_delete: Set[Address]
     error: Optional[EthereumException]
     return_data: Bytes
-    approve_status: Optional[int] = None
     accessed_addresses: Optional[Set[Address]] = None
     accessed_storage_keys: Optional[Set[Tuple]] = None
 
@@ -171,7 +169,6 @@ def process_message_call(message: Message) -> MessageCallOutput:
         accounts_to_delete=accounts_to_delete,
         error=evm.error,
         return_data=evm.output,
-        approve_status=evm.approve_status,
         accessed_addresses=evm.accessed_addresses,
         accessed_storage_keys=evm.accessed_storage_keys,
     )

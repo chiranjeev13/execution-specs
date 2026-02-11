@@ -18,6 +18,8 @@ from execution_testing import (
 from .helpers import approve_bytecode, build_frame, make_frame_tx
 from .spec import Spec, ref_spec_8141
 
+pytestmark = pytest.mark.valid_from("Bogota")
+
 REFERENCE_SPEC_GIT_PATH = ref_spec_8141.git_path
 REFERENCE_SPEC_VERSION = ref_spec_8141.version
 
@@ -65,7 +67,7 @@ def test_happy_path_self_paid(
     tx.expected_receipt = TransactionReceipt(
         payer=sender,
         frame_receipts=[
-            FrameReceipt(status=Spec.STATUS_APPROVED_BOTH),
+            FrameReceipt(status=Spec.STATUS_SUCCESS),
             FrameReceipt(status=Spec.STATUS_SUCCESS),
         ],
     )
@@ -128,8 +130,8 @@ def test_sponsored_transaction(
     tx.expected_receipt = TransactionReceipt(
         payer=sponsor,
         frame_receipts=[
-            FrameReceipt(status=Spec.STATUS_APPROVED_EXECUTION),
-            FrameReceipt(status=Spec.STATUS_APPROVED_PAYMENT),
+            FrameReceipt(status=Spec.STATUS_SUCCESS),
+            FrameReceipt(status=Spec.STATUS_SUCCESS),
             FrameReceipt(status=Spec.STATUS_SUCCESS),
         ],
     )
@@ -176,7 +178,7 @@ def test_invalid_payment_before_execution(
         ),
     ]
     tx = make_frame_tx(sender=sender, frames=frames)
-    tx.error = TransactionException.TYPE_6_INVALID_APPROVAL
+    tx.error = TransactionException.TYPE_6_INVALID_FRAME_EXECUTION
 
     state_test(
         env=Environment(),
@@ -249,7 +251,7 @@ def test_duplicate_execution_approval_invalid(
         ),
     ]
     tx = make_frame_tx(sender=sender, frames=frames)
-    tx.error = TransactionException.TYPE_6_INVALID_APPROVAL
+    tx.error = TransactionException.TYPE_6_INVALID_FRAME_EXECUTION
 
     state_test(
         env=Environment(),
@@ -295,7 +297,7 @@ def test_duplicate_payment_approval_invalid(
         ),
     ]
     tx = make_frame_tx(sender=sender, frames=frames)
-    tx.error = TransactionException.TYPE_6_INVALID_APPROVAL
+    tx.error = TransactionException.TYPE_6_INVALID_FRAME_EXECUTION
 
     state_test(
         env=Environment(),
@@ -310,7 +312,7 @@ def test_status_both_after_sender_approved_invalid(
     state_test: StateTestFiller,
     pre: Alloc,
 ) -> None:
-    """Status=4 after sender approval should revert the frame."""
+    """APPROVE_BOTH after sender approval should revert the frame."""
     sender = pre.fund_eoa(amount=10**18)
     sender_code = Conditional(
         condition=Op.ISZERO(Op.CALLDATALOAD(0)),
@@ -334,7 +336,7 @@ def test_status_both_after_sender_approved_invalid(
         ),
     ]
     tx = make_frame_tx(sender=sender, frames=frames)
-    tx.error = TransactionException.TYPE_6_INVALID_APPROVAL
+    tx.error = TransactionException.TYPE_6_INVALID_FRAME_EXECUTION
 
     state_test(
         env=Environment(),
@@ -348,7 +350,7 @@ def test_status_both_when_neither_approved(
     state_test: StateTestFiller,
     pre: Alloc,
 ) -> None:
-    """Status=4 (APPROVE_BOTH) when neither approval is set should succeed."""
+    """APPROVE_BOTH when neither approval is set should succeed."""
     sender = pre.fund_eoa(amount=10**18)
     pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_BOTH), address=sender
@@ -381,7 +383,7 @@ def test_status_both_when_neither_approved(
     tx.expected_receipt = TransactionReceipt(
         payer=sender,
         frame_receipts=[
-            FrameReceipt(status=Spec.STATUS_APPROVED_BOTH),
+            FrameReceipt(status=Spec.STATUS_SUCCESS),
             FrameReceipt(status=Spec.STATUS_SUCCESS),
         ],
     )

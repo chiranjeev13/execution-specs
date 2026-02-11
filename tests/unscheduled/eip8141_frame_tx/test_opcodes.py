@@ -27,6 +27,8 @@ from .helpers import (
 )
 from .spec import Spec, ref_spec_8141
 
+pytestmark = pytest.mark.valid_from("Bogota")
+
 REFERENCE_SPEC_GIT_PATH = ref_spec_8141.git_path
 REFERENCE_SPEC_VERSION = ref_spec_8141.version
 
@@ -40,9 +42,13 @@ STATUS_SLOT = 0x05
 def caller_origin_guard(expected: Address, success_code) -> bytes:
     """Return bytecode that asserts caller/origin and executes success_code."""
     return Conditional(
-        condition=Op.AND(
-            Op.EQ(Op.CALLER, expected),
-            Op.EQ(Op.ORIGIN, expected),
+        condition=Op.OR(
+            Op.AND(
+                Op.EQ(Op.CALLER, expected),
+                Op.EQ(Op.ORIGIN, expected),
+            ),
+            # Allow self-calls used by APPROVE call-trampoline patterns.
+            Op.EQ(Op.CALLER, Op.ADDRESS),
         ),
         if_true=success_code,
         if_false=Op.REVERT(0, 0),
@@ -142,7 +148,7 @@ def test_caller_origin_verify_mode(
 
     tx.expected_receipt = TransactionReceipt(
         payer=sender,
-        frame_receipts=[FrameReceipt(status=Spec.STATUS_APPROVED_BOTH)],
+        frame_receipts=[FrameReceipt(status=Spec.STATUS_SUCCESS)],
     )
 
     state_test(
@@ -213,7 +219,7 @@ def test_invalid_approve_scope(
 ) -> None:
     """APPROVE scope >= 3 should exceptional halt."""
     sender = pre.fund_eoa(amount=10**18)
-    pre.deploy_contract(code=Op.APPROVE(3, 0, 0), address=sender)
+    pre.deploy_contract(code=Op.APPROVE(0, 0, 3), address=sender)
 
     frames = [
         build_frame(
@@ -252,7 +258,7 @@ def test_invalid_approve_scope_zero_non_sender(
         )
     ]
     tx = make_frame_tx(sender=sender, frames=frames)
-    tx.error = TransactionException.TYPE_6_INVALID_APPROVAL
+    tx.error = TransactionException.TYPE_6_INVALID_FRAME_EXECUTION
 
     state_test(env=Environment(), pre=pre, tx=tx, post={})
 
@@ -261,15 +267,16 @@ def test_approve_return_data_and_call_status(
     state_test: StateTestFiller,
     pre: Alloc,
 ) -> None:
-    """APPROVE should return data and propagate 2-4 statuses in CALL."""
+    """APPROVE should return data while CALL status remains binary."""
     sender = pre.fund_eoa(amount=10**18)
     pre.deploy_contract(
-        code=approve_bytecode(Spec.APPROVE_BOTH), address=sender
+        code=approve_bytecode(Spec.APPROVE_EXECUTION),
+        address=sender,
     )
 
     return_data = b"\x12\x34"
     approve_target = pre.deploy_contract(
-        code=approve_bytecode(Spec.APPROVE_BOTH, return_data)
+        code=approve_bytecode(Spec.APPROVE_PAYMENT, return_data)
     )
 
     caller_code = (
@@ -289,7 +296,7 @@ def test_approve_return_data_and_call_status(
         + Op.SSTORE(DATA_SLOT, Op.MLOAD(0))
         + Op.STOP
     )
-    caller = pre.deploy_contract(code=caller_code)
+    caller = pre.deploy_contract(code=caller_code, balance=10**18)
 
     frames = [
         build_frame(
@@ -322,12 +329,12 @@ def test_approve_return_data_and_call_status(
         tx=tx,
         post={
             sender: Account(
-                code=approve_bytecode(Spec.APPROVE_BOTH),
+                code=approve_bytecode(Spec.APPROVE_EXECUTION),
                 nonce=1,
             ),
             caller: Account(
                 storage={
-                    STATUS_SLOT: Spec.STATUS_APPROVED_BOTH,
+                    STATUS_SLOT: Spec.STATUS_SUCCESS,
                     DATA_SLOT: expected_word,
                 }
             ),
@@ -562,9 +569,7 @@ def test_txparam_status_previous_frames(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
                 nonce=1,
             ),
-            status_reader: Account(
-                storage={STATUS_SLOT: Spec.STATUS_APPROVED_BOTH}
-            ),
+            status_reader: Account(storage={STATUS_SLOT: Spec.STATUS_SUCCESS}),
         },
     )
 
@@ -722,7 +727,7 @@ def test_null_target_verify_mode(
     tx.expected_receipt = TransactionReceipt(
         payer=sender,
         frame_receipts=[
-            FrameReceipt(status=Spec.STATUS_APPROVED_BOTH),
+            FrameReceipt(status=Spec.STATUS_SUCCESS),
             FrameReceipt(status=Spec.STATUS_SUCCESS),
         ],
     )
@@ -791,15 +796,15 @@ def test_approve_in_subcall_propagation(
     state_test: StateTestFiller,
     pre: Alloc,
 ) -> None:
-    """APPROVE in nested CALL propagates status 2-4."""
+    """APPROVE in nested CALL still yields CALL status 1 on success."""
     sender = pre.fund_eoa(amount=10**18)
     pre.deploy_contract(
-        code=approve_bytecode(Spec.APPROVE_BOTH),
+        code=approve_bytecode(Spec.APPROVE_EXECUTION),
         address=sender,
     )
 
     inner = pre.deploy_contract(
-        code=approve_bytecode(Spec.APPROVE_BOTH),
+        code=approve_bytecode(Spec.APPROVE_PAYMENT),
     )
 
     outer_code = (
@@ -817,7 +822,7 @@ def test_approve_in_subcall_propagation(
         )
         + Op.STOP
     )
-    outer = pre.deploy_contract(code=outer_code)
+    outer = pre.deploy_contract(code=outer_code, balance=10**18)
 
     frames = [
         build_frame(
@@ -847,7 +852,7 @@ def test_approve_in_subcall_propagation(
         post={
             outer: Account(
                 storage={
-                    STATUS_SLOT: Spec.STATUS_APPROVED_BOTH,
+                    STATUS_SLOT: Spec.STATUS_SUCCESS,
                 },
             ),
         },

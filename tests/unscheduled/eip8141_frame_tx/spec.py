@@ -14,7 +14,7 @@ class ReferenceSpec:
 
 
 ref_spec_8141 = ReferenceSpec(
-    "EIPS/eip-8141.md", "7c069a1d780a77ef838ccad13dac054abe14080d"
+    "EIPS/eip-8141.md", "0626637feb8ff09789c02682588d80cfd22caa4c"
 )
 
 
@@ -43,9 +43,7 @@ class Spec:
     APPROVE_PAYMENT = 0x1
     APPROVE_BOTH = 0x2
 
+    STATUS_FAILURE = 0
     STATUS_SUCCESS = 1
-    STATUS_APPROVED_EXECUTION = 2
-    STATUS_APPROVED_PAYMENT = 3
-    STATUS_APPROVED_BOTH = 4
 
     EMPTY_BYTES = Bytes(b"")

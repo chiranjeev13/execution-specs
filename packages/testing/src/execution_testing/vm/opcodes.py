@@ -5651,24 +5651,25 @@ class Opcodes(Opcode, Enum):
         0xAA,
         popped_stack_items=3,
         pushed_stack_items=0,
-        kwargs=["scope", "offset", "size"],
+        kwargs=["offset", "size", "scope"],
         terminating=True,
     )
     """
-    APPROVE(scope, offset, size)
+    APPROVE(offset, size, scope)
     ----
 
     Description
     ----
-    Terminate execution with an approval status. Behaves like RETURN
-    but also signals an approval scope (0=execution, 1=payment,
-    2=both). Introduced in EIP-8141.
+    Terminate execution successfully like RETURN while updating
+    transaction-scoped frame-transaction approval state according
+    to `scope` (0=execution, 1=payment, 2=both). Introduced in
+    EIP-8141.
 
     Inputs
     ----
-    - scope: approval scope (0, 1, or 2)
     - offset: byte offset in memory of return data
     - size: byte size of return data
+    - scope: approval scope (0, 1, or 2)
 
     Outputs
     ----

@@ -16,6 +16,8 @@ from execution_testing import (
 from .helpers import approve_bytecode, build_frame, make_frame_tx
 from .spec import Spec, ref_spec_8141
 
+pytestmark = pytest.mark.valid_from("Bogota")
+
 REFERENCE_SPEC_GIT_PATH = ref_spec_8141.git_path
 REFERENCE_SPEC_VERSION = ref_spec_8141.version
 
@@ -69,7 +71,7 @@ def test_receipt_payer_and_frame_receipts(
     tx.expected_receipt = TransactionReceipt(
         payer=sender,
         frame_receipts=[
-            FrameReceipt(status=Spec.STATUS_APPROVED_BOTH),
+            FrameReceipt(status=Spec.STATUS_SUCCESS),
             FrameReceipt(
                 status=Spec.STATUS_SUCCESS,
                 logs=[
@@ -155,14 +157,14 @@ def test_frame_receipt_gas_used(
     # value without knowing warm-up costs, but both frames must consume > 0
     # gas.  The VERIFY frame runs APPROVE and the SENDER frame runs SSTORE.
     # We assert gas_used is present (non-None) by specifying it; the test
-    # framework will validate the value matches.  Since we don't know the
+    # framework will validate the value matches. Since we don't know the
     # exact cost, we verify structurally that gas_used is reported and that
-    # status codes include APPROVE status codes (2-4).
+    # statuses remain in the binary 0/1 domain.
     tx.expected_receipt = TransactionReceipt(
         payer=sender,
         frame_receipts=[
             FrameReceipt(
-                status=Spec.STATUS_APPROVED_BOTH,
+                status=Spec.STATUS_SUCCESS,
                 # gas_used is checked to be present and > 0 by the framework
             ),
             FrameReceipt(
@@ -186,11 +188,11 @@ def test_frame_receipt_gas_used(
     )
 
 
-def test_frame_receipt_approve_status_codes(
+def test_frame_receipt_binary_status_codes(
     state_test: StateTestFiller,
     pre: Alloc,
 ) -> None:
-    """Frame receipts include raw APPROVE status codes (2-4)."""
+    """Frame receipts expose binary status codes (0/1)."""
     sender = pre.fund_eoa(amount=10**18)
     sponsor = pre.fund_eoa(amount=10**18)
 
@@ -231,14 +233,13 @@ def test_frame_receipt_approve_status_codes(
         max_priority_fee_per_gas=0,
     )
 
-    # Verify that receipts use the extended status codes (2 for execution
-    # approval, 3 for payment approval), NOT normalized to 0/1.
+    # Verify all frame receipts use binary status codes.
     tx.expected_receipt = TransactionReceipt(
         payer=sponsor,
         frame_receipts=[
-            FrameReceipt(status=Spec.STATUS_APPROVED_EXECUTION),  # 2
-            FrameReceipt(status=Spec.STATUS_APPROVED_PAYMENT),  # 3
-            FrameReceipt(status=Spec.STATUS_SUCCESS),  # 1
+            FrameReceipt(status=Spec.STATUS_SUCCESS),
+            FrameReceipt(status=Spec.STATUS_SUCCESS),
+            FrameReceipt(status=Spec.STATUS_SUCCESS),
         ],
     )
 
@@ -297,7 +298,7 @@ def test_frame_receipt_reverted_sender_frame(
     tx.expected_receipt = TransactionReceipt(
         payer=sender,
         frame_receipts=[
-            FrameReceipt(status=Spec.STATUS_APPROVED_BOTH),
+            FrameReceipt(status=Spec.STATUS_SUCCESS),
             FrameReceipt(status=0, logs=[]),
         ],
     )
@@ -354,7 +355,7 @@ def test_frame_receipt_oog_sender_frame(
     tx.expected_receipt = TransactionReceipt(
         payer=sender,
         frame_receipts=[
-            FrameReceipt(status=Spec.STATUS_APPROVED_BOTH),
+            FrameReceipt(status=Spec.STATUS_SUCCESS),
             FrameReceipt(status=0, gas_used=frame_gas),
         ],
     )

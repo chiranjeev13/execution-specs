@@ -10,6 +10,7 @@ from .forks.forks import (
     Amsterdam,
     ArrowGlacier,
     Berlin,
+    Bogota,
     Byzantium,
     Cancun,
     Constantinople,
@@ -28,6 +29,7 @@ from .forks.forks import (
     TangerineWhistle,
 )
 from .forks.transition import (
+    AmsterdamToBogotaAtTime15k,
     BerlinToLondonAt5,
     BPO1ToBPO2AtTime15k,
     BPO2ToAmsterdamAtTime15k,
@@ -90,6 +92,8 @@ __all__ = [
     "Amsterdam",
     "ArrowGlacier",
     "Berlin",
+    "Bogota",
+    "AmsterdamToBogotaAtTime15k",
     "BerlinToLondonAt5",
     "Byzantium",
     "Constantinople",

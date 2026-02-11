@@ -164,8 +164,8 @@ class FrameTransactionInvalidApprovalError(InvalidTransaction):
 
 class FrameTransactionInvalidFrameExecutionError(InvalidTransaction):
     """
-    A frame transaction has a ``VERIFY`` frame that did not terminate
-    with an ``APPROVE`` status code (2-4), or the transaction's approval
+    A frame transaction has a ``VERIFY`` frame that did not successfully
+    call ``APPROVE`` during execution, or the transaction's approval
     requirements were not satisfied after all frames executed.
 
     [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141

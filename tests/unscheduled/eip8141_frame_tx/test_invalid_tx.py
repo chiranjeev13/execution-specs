@@ -22,12 +22,12 @@ from execution_testing.base_types import FixedSizeBytes, HexNumber
 from .helpers import build_frame, make_frame_tx
 from .spec import Spec, ref_spec_8141
 
+pytestmark = pytest.mark.valid_from("Bogota")
+
 REFERENCE_SPEC_GIT_PATH = ref_spec_8141.git_path
 REFERENCE_SPEC_VERSION = ref_spec_8141.version
 
 exception_test = pytest.mark.exception_test
-
-
 
 
 class OversizedAddress(FixedSizeBytes[21]):  # type: ignore[misc]

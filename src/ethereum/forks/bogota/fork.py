@@ -79,21 +79,17 @@ from .state_tracker import (
 )
 from .transactions import (
     ENTRY_POINT,
-    FRAME_TX_INTRINSIC_COST,
     AccessListTransaction,
     BlobTransaction,
     FeeMarketTransaction,
-    Frame,
     FrameTransaction,
     LegacyTransaction,
     SetCodeTransaction,
     Transaction,
-    calculate_frame_tx_intrinsic_cost,
     decode_transaction,
     encode_transaction,
     get_transaction_hash,
     recover_sender,
-    signing_hash_8141,
     validate_transaction,
 )
 from .trie import root, trie_set
@@ -605,6 +601,7 @@ def check_frame_transaction(
         The blob versioned hashes.
     tx_blob_gas_used :
         The blob gas used.
+
     """
     intrinsic_gas, _ = validate_transaction(tx)
     tx_gas_limit = intrinsic_gas
@@ -1235,6 +1232,7 @@ def process_frame_transaction(
         The index of the transaction in the block.
 
     [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+
     """
     from ethereum_types.bytes import Bytes0
 
@@ -1283,13 +1281,11 @@ def process_frame_transaction(
     sender_balance_before = get_account(block_env.state, sender).balance
     capture_pre_balance(tx_state_changes, sender, sender_balance_before)
 
-    # Initialize approval state
-    payer_approved = False
-    sender_approved = False
-    payer_address: Optional[Address] = None
+    # Transaction-scoped frame approval context (shared across all frames).
+    tx_fee = tx_gas_limit * effective_gas_price + blob_gas_fee
+    frame_tx_approval = vm.FrameTxApprovalContext(tx_fee=tx_fee)
     frame_statuses: List[int] = []
     frame_logs: List[Tuple[Log, ...]] = []
-    frame_gas_used_list: List[Uint] = []
     total_gas_used = Uint(0)
 
     # Shared accessed addresses/storage across frames
@@ -1301,16 +1297,14 @@ def process_frame_transaction(
     try:
         for frame_index, frame in enumerate(tx.frames):
             # Determine target
-            if isinstance(frame.target, Bytes0) or frame.target == Bytes0(
-                b""
-            ):
+            if isinstance(frame.target, Bytes0) or frame.target == Bytes0(b""):
                 target = sender
             else:
                 target = Address(frame.target)
 
             # Determine caller and validate mode
             if frame.mode == Uint(2):  # SENDER mode
-                if not sender_approved:
+                if not frame_tx_approval.sender_approved:
                     raise FrameTransactionInvalidApprovalError(
                         "SENDER mode before execution approval"
                     )
@@ -1339,6 +1333,7 @@ def process_frame_transaction(
                 state_changes=tx_state_changes,
                 # Frame-transaction-scoped state
                 frame_tx=tx,
+                frame_tx_approval=frame_tx_approval,
                 current_frame_index=frame_index,
                 frame_statuses=frame_statuses,
             )
@@ -1376,7 +1371,20 @@ def process_frame_transaction(
                 state_changes=call_frame,
             )
 
+            sender_approved_before_frame = frame_tx_approval.sender_approved
+            payer_approved_before_frame = frame_tx_approval.payer_approved
+            payer_address_before_frame = frame_tx_approval.payer_address
+
+            frame_tx_approval.approve_called_in_frame = False
             frame_output = process_message_call(message)
+
+            if frame_output.error is not None:
+                frame_tx_approval.sender_approved = (
+                    sender_approved_before_frame
+                )
+                frame_tx_approval.payer_approved = payer_approved_before_frame
+                frame_tx_approval.payer_address = payer_address_before_frame
+                frame_tx_approval.approve_called_in_frame = False
 
             # Calculate frame gas used
             frame_gas_used = frame.gas_limit - frame_output.gas_left
@@ -1390,132 +1398,25 @@ def process_frame_transaction(
                     frame_output.accessed_storage_keys
                 )
 
-            # Determine frame status
-            frame_status = 0
-            if frame_output.error is None:
-                # Check for APPROVE status from output
-                approve_status = getattr(
-                    frame_output, "approve_status", None
+            # Frame status is binary in Bogota: 0=failure, 1=success.
+            frame_status = 1 if frame_output.error is None else 0
+
+            # VERIFY frames must successfully call APPROVE during execution.
+            if frame.mode == Uint(1) and (
+                not frame_tx_approval.approve_called_in_frame
+            ):
+                raise FrameTransactionInvalidFrameExecutionError(
+                    "VERIFY frame must successfully call APPROVE"
                 )
-                if approve_status is not None and approve_status > 1:
-                    frame_status = approve_status
-                else:
-                    frame_status = 1  # SUCCESS
-            # else: frame_status = 0 (FAIL)
-
-            # Handle VERIFY frame requirements
-            if frame.mode == Uint(1):  # VERIFY
-                if frame_status < 2 or frame_status > 4:
-                    raise FrameTransactionInvalidFrameExecutionError(
-                        "VERIFY frame must terminate with APPROVE (2-4)"
-                    )
-
-            # Process approval state for status 2-4
-            if 2 <= frame_status <= 4:
-                # Status 2: execution approval
-                if frame_status == 2 or frame_status == 4:
-                    if target == sender:
-                        if sender_approved:
-                            # Duplicate execution approval → revert frame
-                            frame_status = 0
-                            frame_output = _revert_frame_output(
-                                frame_output, frame.gas_limit
-                            )
-                            if frame.mode == Uint(1):
-                                raise (
-                                    FrameTransactionInvalidFrameExecutionError(
-                                        "Duplicate execution approval "
-                                        "in VERIFY"
-                                    )
-                                )
-                        else:
-                            sender_approved = True
-                    else:
-                        # scope=0 with non-sender target
-                        raise FrameTransactionInvalidApprovalError(
-                            "Execution approval with non-sender target"
-                        )
-
-                # Status 3: payment approval
-                if frame_status == 3 or frame_status == 4:
-                    if frame_status == 3 and not sender_approved:
-                        # Payment before execution approval
-                        raise FrameTransactionInvalidApprovalError(
-                            "Payment approval before execution approval"
-                        )
-                    if frame_status == 4 and sender_approved:
-                        # Status 4 when sender already approved
-                        # (The sender_approved was set above in the
-                        # status==4 branch, so check the state before
-                        # this frame)
-                        # Actually for status 4, we set sender_approved
-                        # above. The rule is: status 4 is only valid
-                        # if sender_approved was false BEFORE this frame.
-                        # Since we set it above, we need to check if it
-                        # was already true before we set it.
-                        # This is handled: if sender_approved was already
-                        # True when we entered status 2/4 check above,
-                        # we would have reverted the frame.
-                        pass
-
-                    if payer_approved:
-                        # Duplicate payment
-                        raise FrameTransactionInvalidApprovalError(
-                            "Duplicate payment approval"
-                        )
-
-                    # Collect gas cost from target (payer)
-                    total_tx_gas_fee = tx_gas_limit * effective_gas_price
-                    payer_balance = get_account(
-                        block_env.state, target
-                    ).balance
-                    if Uint(payer_balance) < (
-                        total_tx_gas_fee + blob_gas_fee
-                    ):
-                        raise InvalidBlock(
-                            "Payer has insufficient balance"
-                        )
-
-                    # Deduct gas fee from payer
-                    track_address(tx_state_changes, target)
-                    capture_pre_balance(
-                        tx_state_changes,
-                        target,
-                        payer_balance,
-                    )
-                    new_payer_balance = U256(
-                        Uint(payer_balance)
-                        - total_tx_gas_fee
-                        - blob_gas_fee
-                    )
-                    set_account_balance(
-                        block_env.state, target, new_payer_balance
-                    )
-                    track_balance_change(
-                        tx_state_changes, target, new_payer_balance
-                    )
-
-                    # Increment sender nonce
-                    increment_nonce(block_env.state, sender)
-                    sender_nonce_after = get_account(
-                        block_env.state, sender
-                    ).nonce
-                    track_nonce_change(
-                        tx_state_changes, sender, U64(sender_nonce_after)
-                    )
-
-                    payer_approved = True
-                    payer_address = target
 
             frame_statuses.append(frame_status)
-            if frame_output.error is None and frame_status > 0:
+            if frame_status == 1:
                 frame_logs.append(frame_output.logs)
             else:
                 frame_logs.append(())
-            frame_gas_used_list.append(frame_gas_used)
 
-        # After all frames: payer must be approved
-        if not payer_approved:
+        # After all frames: payer must be approved.
+        if not frame_tx_approval.payer_approved:
             raise FrameTransactionInvalidFrameExecutionError(
                 "payer_approved must be true after all frames"
             )
@@ -1537,15 +1438,19 @@ def process_frame_transaction(
     gas_refund_amount = gas_refund * effective_gas_price
 
     # Refund to payer
-    assert payer_address is not None
+    assert frame_tx_approval.payer_address is not None
     payer_balance_after_refund = get_account(
-        block_env.state, payer_address
+        block_env.state, frame_tx_approval.payer_address
     ).balance + U256(gas_refund_amount)
     set_account_balance(
-        block_env.state, payer_address, payer_balance_after_refund
+        block_env.state,
+        frame_tx_approval.payer_address,
+        payer_balance_after_refund,
     )
     track_balance_change(
-        tx_state_changes, payer_address, payer_balance_after_refund
+        tx_state_changes,
+        frame_tx_approval.payer_address,
+        payer_balance_after_refund,
     )
 
     # Pay coinbase
@@ -1577,9 +1482,7 @@ def process_frame_transaction(
     for logs in frame_logs:
         all_logs += logs
 
-    receipt = make_receipt(
-        tx, None, block_output.block_gas_used, all_logs
-    )
+    receipt = make_receipt(tx, None, block_output.block_gas_used, all_logs)
 
     receipt_key = rlp.encode(Uint(index))
     block_output.receipt_keys += (receipt_key,)
@@ -1594,21 +1497,6 @@ def process_frame_transaction(
 
     # EIP-7928: Commit transaction frame
     commit_transaction_frame(tx_state_changes)
-
-
-def _revert_frame_output(
-    frame_output: MessageCallOutput,
-    gas_limit: Uint,
-) -> MessageCallOutput:
-    """Create a reverted version of a frame output."""
-    return MessageCallOutput(
-        gas_left=frame_output.gas_left,
-        refund_counter=U256(0),
-        logs=(),
-        accounts_to_delete=set(),
-        error=EthereumException("frame reverted"),
-        return_data=Bytes(b""),
-    )
 
 
 def process_withdrawals(

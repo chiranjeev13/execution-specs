@@ -14,18 +14,26 @@ Implementations of the EVM frame transaction instructions defined in
 [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
 """
 
-from ethereum_types.bytes import Bytes
-from ethereum_types.numeric import U256, Uint
+from ethereum_types.bytes import Bytes, Bytes0
+from ethereum_types.numeric import U64, U256, Uint
 
+from ...state import get_account, increment_nonce, set_account_balance
+from ...state_tracker import (
+    capture_pre_balance,
+    track_address,
+    track_balance_change,
+    track_nonce_change,
+)
 from ...transactions import (
     FrameTransaction,
     signing_hash_8141,
 )
-from .. import Evm
-from ..exceptions import ExceptionalHalt, InvalidOpcode
+from .. import Evm, FrameTxApprovalContext
+from ..exceptions import ExceptionalHalt, Revert
 from ..gas import (
     GAS_BASE,
     GAS_VERY_LOW,
+    GAS_ZERO,
     calculate_gas_extend_memory,
     charge_gas,
 )
@@ -55,6 +63,34 @@ def _get_frame_tx(evm: Evm) -> FrameTransaction:
     if tx is None or not isinstance(tx, FrameTransaction):
         raise FrameTxNotActiveError
     return tx
+
+
+def _get_frame_tx_approval(evm: Evm) -> FrameTxApprovalContext:
+    """Get the active frame transaction approval context or raise."""
+    frame_tx_approval = evm.message.tx_env.frame_tx_approval
+    if frame_tx_approval is None:
+        raise FrameTxNotActiveError
+    return frame_tx_approval
+
+
+def _get_current_frame_target(evm: Evm, tx: FrameTransaction):
+    """Resolve the target address of the currently executing frame."""
+    frame_idx = evm.message.tx_env.current_frame_index
+    if frame_idx is None:
+        raise FrameTxNotActiveError
+    if frame_idx >= len(tx.frames):
+        raise FrameTxNotActiveError
+
+    frame = tx.frames[frame_idx]
+    if isinstance(frame.target, Bytes0) or frame.target == Bytes0(b""):
+        return tx.sender
+    return frame.target
+
+
+def _revert_frame(evm: Evm) -> None:
+    """Revert the current frame with empty output."""
+    evm.output = Bytes(b"")
+    raise Revert
 
 
 def _get_txparam_value(
@@ -93,20 +129,22 @@ def _get_txparam_value(
         return (U256(tx.max_fee_per_blob_gas).to_be_bytes32(), Uint(32))
     elif selector == 0x06:
         # max cost
+        from ...transactions import calculate_frame_tx_intrinsic_cost
         from ..gas import (
             GAS_PER_BLOB,
             calculate_blob_gas_price,
         )
-        from ...transactions import calculate_frame_tx_intrinsic_cost
 
         tx_gas_limit = calculate_frame_tx_intrinsic_cost(tx)
         effective_gas_price = tx_env.gas_price
         blob_count = len(tx.blob_versioned_hashes)
-        blob_gas_price = calculate_blob_gas_price(
-            block_env.excess_blob_gas
+        blob_gas_price = calculate_blob_gas_price(block_env.excess_blob_gas)
+        blob_fees = (
+            Uint(blob_count) * Uint(GAS_PER_BLOB) * Uint(blob_gas_price)
         )
-        blob_fees = Uint(blob_count) * Uint(GAS_PER_BLOB) * Uint(blob_gas_price)
-        max_cost_val = Uint(tx_gas_limit) * Uint(effective_gas_price) + blob_fees
+        max_cost_val = (
+            Uint(tx_gas_limit) * Uint(effective_gas_price) + blob_fees
+        )
         return (U256(max_cost_val).to_be_bytes32(), Uint(32))
     elif selector == 0x07:
         # len(blob_versioned_hashes)
@@ -132,7 +170,6 @@ def _get_txparam_value(
         if index >= len(tx.frames):
             raise TxParamOutOfBounds
         frame = tx.frames[index]
-        from ethereum_types.bytes import Bytes0
 
         if isinstance(frame.target, Bytes0) or frame.target == Bytes0(b""):
             padded = b"\x00" * 32
@@ -162,7 +199,7 @@ def _get_txparam_value(
             raise TxParamOutOfBounds
         return (U256(tx.frames[index].mode).to_be_bytes32(), Uint(32))
     elif selector == 0x15:
-        # frame[index].status (only for past frames)
+        # frame[index].status (0=failure, 1=success; only for past frames)
         if index >= len(tx.frames):
             raise TxParamOutOfBounds
         frame_idx = tx_env.current_frame_index
@@ -182,47 +219,121 @@ def approve(evm: Evm) -> None:
     """
     ``APPROVE`` opcode (``0xAA``).
 
-    Like ``RETURN`` but with a scope operand that sets an approval status
-    code (2, 3, or 4) on the call context.
+    Like ``RETURN`` but with a scope operand that updates transaction-scoped
+    approval state.
+
+    Stack (top first): ``offset``, ``length``, ``scope``.
 
     Parameters
     ----------
     evm :
         The current EVM frame.
+
     """
     # STACK
-    scope = pop(evm.stack)
     offset = pop(evm.stack)
     length = pop(evm.stack)
+    scope = pop(evm.stack)
 
     # GAS
-    extend_memory = calculate_gas_extend_memory(
-        evm.memory, [(offset, length)]
-    )
-    charge_gas(evm, GAS_BASE + extend_memory.cost)
+    extend_memory = calculate_gas_extend_memory(evm.memory, [(offset, length)])
+    charge_gas(evm, GAS_ZERO + extend_memory.cost)
 
     # OPERATION
+    tx = _get_frame_tx(evm)
+    tx_approval = _get_frame_tx_approval(evm)
+
     if scope > U256(2):
         raise InvalidApproveScope
 
-    # Map scope to status code: 0→2, 1→3, 2→4
-    status_code = int(scope) + 2
+    frame_target = _get_current_frame_target(evm, tx)
+    if evm.message.caller != frame_target:
+        _revert_frame(evm)
 
-    # Extend memory if needed
+    state = evm.message.block_env.state
+    tx_state_changes = evm.message.tx_env.state_changes
+    frame_state_changes = evm.state_changes
+
+    if scope == U256(0):
+        if tx_approval.sender_approved:
+            _revert_frame(evm)
+        if evm.message.caller != tx.sender:
+            _revert_frame(evm)
+        tx_approval.sender_approved = True
+
+    elif scope == U256(1):
+        if tx_approval.payer_approved:
+            _revert_frame(evm)
+        if not tx_approval.sender_approved:
+            _revert_frame(evm)
+
+        payer_balance = get_account(state, frame_target).balance
+        if Uint(payer_balance) < tx_approval.tx_fee:
+            _revert_frame(evm)
+
+        track_address(frame_state_changes, tx.sender)
+        increment_nonce(state, tx.sender)
+        sender_nonce_after = get_account(state, tx.sender).nonce
+        track_nonce_change(
+            frame_state_changes,
+            tx.sender,
+            U64(sender_nonce_after),
+        )
+
+        track_address(frame_state_changes, frame_target)
+        capture_pre_balance(tx_state_changes, frame_target, payer_balance)
+        payer_balance_after = U256(Uint(payer_balance) - tx_approval.tx_fee)
+        set_account_balance(state, frame_target, payer_balance_after)
+        track_balance_change(
+            frame_state_changes,
+            frame_target,
+            payer_balance_after,
+        )
+
+        tx_approval.payer_approved = True
+        tx_approval.payer_address = frame_target
+
+    else:  # scope == 2
+        if tx_approval.sender_approved or tx_approval.payer_approved:
+            _revert_frame(evm)
+        if evm.message.caller != tx.sender:
+            _revert_frame(evm)
+
+        payer_balance = get_account(state, frame_target).balance
+        if Uint(payer_balance) < tx_approval.tx_fee:
+            _revert_frame(evm)
+
+        tx_approval.sender_approved = True
+
+        track_address(frame_state_changes, tx.sender)
+        increment_nonce(state, tx.sender)
+        sender_nonce_after = get_account(state, tx.sender).nonce
+        track_nonce_change(
+            frame_state_changes,
+            tx.sender,
+            U64(sender_nonce_after),
+        )
+
+        track_address(frame_state_changes, frame_target)
+        capture_pre_balance(tx_state_changes, frame_target, payer_balance)
+        payer_balance_after = U256(Uint(payer_balance) - tx_approval.tx_fee)
+        set_account_balance(state, frame_target, payer_balance_after)
+        track_balance_change(
+            frame_state_changes,
+            frame_target,
+            payer_balance_after,
+        )
+
+        tx_approval.payer_approved = True
+        tx_approval.payer_address = frame_target
+
     evm.memory += b"\x00" * extend_memory.expand_by
-
-    # Read return data from memory
-    output = evm.memory[offset : offset + length]
-    evm.output = Bytes(bytes(output))
-
-    # Set the approve status on the EVM
-    evm.approve_status = status_code
-
-    # Halt execution (like RETURN)
+    evm.output = Bytes(bytes(evm.memory[offset : offset + length]))
+    tx_approval.approve_called_in_frame = True
     evm.running = False
 
     # PROGRAM COUNTER
-    evm.pc += Uint(1)
+    pass
 
 
 def txparamload(evm: Evm) -> None:
@@ -238,6 +349,7 @@ def txparamload(evm: Evm) -> None:
     ----------
     evm :
         The current EVM frame.
+
     """
     # STACK
     selector = pop(evm.stack)
@@ -277,6 +389,7 @@ def txparamsize(evm: Evm) -> None:
     ----------
     evm :
         The current EVM frame.
+
     """
     # STACK
     in1 = pop(evm.stack)
@@ -306,6 +419,7 @@ def txparamcopy(evm: Evm) -> None:
     ----------
     evm :
         The current EVM frame.
+
     """
     # STACK
     in1 = pop(evm.stack)

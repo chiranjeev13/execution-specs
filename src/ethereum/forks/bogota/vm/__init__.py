@@ -29,7 +29,12 @@ from ..state_tracker import StateChanges, merge_on_failure, merge_on_success
 from ..transactions import LegacyTransaction
 from ..trie import Trie
 
-__all__ = ("Environment", "Evm", "Message")
+__all__ = (
+    "Environment",
+    "Evm",
+    "Message",
+    "FrameTxApprovalContext",
+)
 
 
 @dataclass
@@ -98,6 +103,23 @@ class BlockOutput:
 
 
 @dataclass
+class FrameTxApprovalContext:
+    """
+    Transaction-scoped approval context for frame transactions.
+
+    This context is shared by all nested calls within a frame (via
+    ``tx_env`` reference sharing) and persists across all frames in the
+    transaction.
+    """
+
+    sender_approved: bool = False
+    payer_approved: bool = False
+    payer_address: Optional[Address] = None
+    approve_called_in_frame: bool = False
+    tx_fee: Uint = Uint(0)
+
+
+@dataclass
 class TransactionEnvironment:
     """
     Items that are used by contract creation or message call.
@@ -119,6 +141,10 @@ class TransactionEnvironment:
     Reference to the ``FrameTransaction`` for ``TXPARAM*`` opcodes.
     ``None`` for non-frame transactions.
     """
+    frame_tx_approval: Optional[FrameTxApprovalContext] = None
+    """
+    Transaction-scoped approval context for frame transactions.
+    """
     current_frame_index: Optional[int] = None
     """
     Index of the currently executing frame. ``None`` for non-frame
@@ -126,7 +152,8 @@ class TransactionEnvironment:
     """
     frame_statuses: Optional[List[int]] = None
     """
-    Status codes of completed frames for ``TXPARAM(0x15)`` introspection.
+    Binary status codes (``0`` failure, ``1`` success) of completed frames
+    for ``TXPARAM(0x15)`` introspection.
     ``None`` for non-frame transactions.
     """
 
@@ -179,11 +206,6 @@ class Evm:
     accessed_addresses: Set[Address]
     accessed_storage_keys: Set[Tuple[Address, Bytes32]]
     state_changes: StateChanges
-    approve_status: Optional[int] = None
-    """
-    The APPROVE status code (2, 3, or 4) set by the ``APPROVE`` opcode.
-    ``None`` if APPROVE was not called. Used by frame transaction processing.
-    """
 
 
 def incorporate_child_on_success(evm: Evm, child_evm: Evm) -> None:
@@ -206,12 +228,6 @@ def incorporate_child_on_success(evm: Evm, child_evm: Evm) -> None:
     evm.accessed_storage_keys.update(child_evm.accessed_storage_keys)
 
     merge_on_success(child_evm.state_changes)
-
-    # EIP-8141: Propagate APPROVE status from child
-    # Note: approve_status is NOT propagated to the parent.
-    # APPROVE only sets the status at the direct EVM level.
-    # The CALL instruction pushes the status code (2-4) onto the stack,
-    # but the parent EVM's approve_status is not affected.
 
 
 def incorporate_child_on_error(evm: Evm, child_evm: Evm) -> None:

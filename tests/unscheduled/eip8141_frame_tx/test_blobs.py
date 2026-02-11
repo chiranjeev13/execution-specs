@@ -21,6 +21,8 @@ from .helpers import (
 )
 from .spec import Spec, ref_spec_8141
 
+pytestmark = pytest.mark.valid_from("Bogota")
+
 REFERENCE_SPEC_GIT_PATH = ref_spec_8141.git_path
 REFERENCE_SPEC_VERSION = ref_spec_8141.version
 

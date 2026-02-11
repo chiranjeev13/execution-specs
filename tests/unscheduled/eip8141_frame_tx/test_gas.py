@@ -1,5 +1,6 @@
 """Gas accounting and cross-frame state tests for EIP-8141."""
 
+import pytest
 from execution_testing import (
     Account,
     Alloc,
@@ -11,7 +12,6 @@ from execution_testing import (
     Op,
     StateTestFiller,
     Transaction,
-    TransactionException,
     TransactionReceipt,
 )
 
@@ -22,6 +22,8 @@ from .helpers import (
     make_frame_tx,
 )
 from .spec import Spec, ref_spec_8141
+
+pytestmark = pytest.mark.valid_from("Bogota")
 
 REFERENCE_SPEC_GIT_PATH = ref_spec_8141.git_path
 REFERENCE_SPEC_VERSION = ref_spec_8141.version

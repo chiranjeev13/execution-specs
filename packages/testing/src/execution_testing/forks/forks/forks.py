@@ -3367,3 +3367,22 @@ class Amsterdam(BPO2):
         """
         del block_number, timestamp
         return True
+
+
+class Bogota(Amsterdam):
+    """Bogota fork."""
+
+    @classmethod
+    def tx_types(
+        cls, *, block_number: int = 0, timestamp: int = 0
+    ) -> List[int]:
+        """At Bogota, frame transactions (type 6) are introduced."""
+        return [6] + super(Bogota, cls).tx_types(
+            block_number=block_number,
+            timestamp=timestamp,
+        )
+
+    @classmethod
+    def is_deployed(cls) -> bool:
+        """Return True if this fork is deployed."""
+        return False

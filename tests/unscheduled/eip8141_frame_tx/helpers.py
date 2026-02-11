@@ -8,13 +8,12 @@ from execution_testing import (
     Address,
     Bytecode,
     Bytes,
+    Conditional,
     Frame,
     Hash,
     Op,
     Transaction,
 )
-
-from execution_testing import Account
 
 from .spec import Spec
 
@@ -111,14 +110,56 @@ def approve_bytecode(
     scope: int,
     return_data: bytes | Bytes = b"",
 ) -> Bytecode:
-    """Return bytecode that approves with optional return data."""
+    """Return bytecode that executes APPROVE and optionally returns data."""
     return_data = Bytes(return_data)
+
     if len(return_data) == 0:
-        return Op.APPROVE(scope, 0, 0)
-    # MSTORE stores a 32-byte big-endian value, so the data lands
-    # at offset (32 - len(return_data)) within the 32-byte word.
-    data_offset = 32 - len(return_data)
-    return Op.MSTORE(0, return_data) + Op.APPROVE(scope, data_offset, len(return_data))
+        direct_approve = Op.APPROVE(0, 0, scope)
+    else:
+        # MSTORE stores a 32-byte big-endian value, so the data lands
+        # at offset (32 - len(return_data)) within the 32-byte word.
+        data_offset = 32 - len(return_data)
+        direct_approve = Op.MSTORE(0, return_data) + Op.APPROVE(
+            data_offset,
+            len(return_data),
+            scope,
+        )
+
+    # frame_target = tx.frames[current_frame_index].target, with null target
+    # resolved to tx.sender.
+    current_frame_index = Op.TXPARAMLOAD(0x10, 0, 0)
+    frame_target_raw = Op.TXPARAMLOAD(0x11, current_frame_index, 0)
+    frame_target_resolved = Op.OR(
+        frame_target_raw,
+        Op.MUL(
+            Op.ISZERO(frame_target_raw),
+            Op.TXPARAMLOAD(0x02, 0, 0),
+        ),
+    )
+
+    # If CALLER already equals frame target, execute APPROVE directly.
+    # Otherwise trampoline through a self-CALL so the nested context has
+    # CALLER == current contract address.
+    return Conditional(
+        condition=Op.OR(
+            Op.EQ(Op.CALLER, frame_target_resolved),
+            Op.EQ(Op.CALLER, Op.ADDRESS),
+        ),
+        if_true=direct_approve,
+        if_false=(
+            Op.CALL(
+                gas=100_000,
+                address=Op.ADDRESS,
+                value=0,
+                args_offset=0,
+                args_size=0,
+                ret_offset=0,
+                ret_size=0,
+            )
+            + Op.RETURNDATACOPY(0, 0, Op.RETURNDATASIZE)
+            + Op.RETURN(0, Op.RETURNDATASIZE)
+        ),
+    )
 
 
 def compute_sig_hash(tx: Transaction) -> Bytes:
