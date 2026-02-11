@@ -187,13 +187,24 @@ class AuthorizationTuple(AuthorizationTupleGeneric[HexNumber]):
                 pass
 
 
-class FrameGeneric(CamelModel, Generic[NumberBoundTypeVar]):
+class FrameGeneric(CamelModel, Generic[NumberBoundTypeVar], RLPSerializable):
     """EIP-8141 frame within a frame transaction."""
+
+    # Keep `rlp_override` out of frame model serialization.
+    rlp_override: ClassVar[Bytes | None] = None
 
     mode: NumberBoundTypeVar = Field(0)  # type: ignore
     target: Address | None = None
     gas_limit: NumberBoundTypeVar = Field(0)  # type: ignore
     data: Bytes = Field(Bytes(b""))
+
+    rlp_fields: ClassVar[List[str]] = ["mode", "target", "gas_limit", "data"]
+    rlp_signing_fields: ClassVar[List[str]] = [
+        "mode",
+        "target",
+        "gas_limit",
+        "data",
+    ]
 
     def to_list(self, *, signing: bool = False) -> list:
         """Return frame fields as a list for RLP encoding."""
@@ -213,10 +224,6 @@ class FrameGeneric(CamelModel, Generic[NumberBoundTypeVar]):
         data = self.model_dump()
         data.update(kwargs)
         return self.__class__(**data)
-
-    def rlp(self) -> Bytes:
-        """Return RLP-encoded bytes for this frame."""
-        return Bytes(eth_rlp.encode(self.to_list()))
 
 
 class Frame(FrameGeneric[HexNumber]):

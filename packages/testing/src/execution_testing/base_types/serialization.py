@@ -21,9 +21,6 @@ def to_serializable_element(v: Any) -> Any:
         if v.signable:
             v.sign()
         return v.to_list(signing=False)
-    elif hasattr(v, "to_list") and callable(v.to_list):
-        # Support Frame and other objects with to_list() method
-        return v.to_list(signing=False)
     elif v is None:
         return b""
     raise Exception(f"Unable to serialize element {v} of type {type(v)}.")

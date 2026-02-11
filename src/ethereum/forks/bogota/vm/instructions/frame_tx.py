@@ -26,14 +26,17 @@ from ...state_tracker import (
 )
 from ...transactions import (
     FrameTransaction,
+    calculate_frame_tx_intrinsic_cost,
     signing_hash_8141,
 )
 from .. import Evm, FrameTxApprovalContext
 from ..exceptions import ExceptionalHalt, Revert
 from ..gas import (
     GAS_BASE,
+    GAS_PER_BLOB,
     GAS_VERY_LOW,
     GAS_ZERO,
+    calculate_blob_gas_price,
     calculate_gas_extend_memory,
     charge_gas,
 )
@@ -129,12 +132,6 @@ def _get_txparam_value(
         return (U256(tx.max_fee_per_blob_gas).to_be_bytes32(), Uint(32))
     elif selector == 0x06:
         # max cost
-        from ...transactions import calculate_frame_tx_intrinsic_cost
-        from ..gas import (
-            GAS_PER_BLOB,
-            calculate_blob_gas_price,
-        )
-
         tx_gas_limit = calculate_frame_tx_intrinsic_cost(tx)
         effective_gas_price = tx_env.gas_price
         blob_count = len(tx.blob_versioned_hashes)
