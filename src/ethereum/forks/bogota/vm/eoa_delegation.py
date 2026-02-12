@@ -190,7 +190,7 @@ def set_delegation(message: Message) -> U256:
         except InvalidSignatureError:
             continue
 
-        message.accessed_addresses.add(authority)
+        message.tx_env.accessed_addresses.add(authority)
 
         authority_account = get_account(state, authority)
         authority_code = authority_account.code

@@ -12,7 +12,7 @@ A straightforward interpreter that executes EVM code.
 """
 
 from dataclasses import dataclass
-from typing import Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple
 
 from ethereum_types.bytes import Bytes, Bytes0
 from ethereum_types.numeric import U64, U256, Uint, ulen
@@ -30,8 +30,13 @@ from ethereum.trace import (
 )
 
 from ..blocks import Log
+from ..exceptions import (
+    FrameTransactionInvalidApprovalError,
+    FrameTransactionInvalidFrameExecutionError,
+)
 from ..fork_types import Address
 from ..state import (
+    TransientStorage,
     account_has_code_or_nonce,
     account_has_storage,
     begin_transaction,
@@ -47,6 +52,7 @@ from ..state import (
 from ..state_tracker import (
     capture_pre_balance,
     capture_pre_code,
+    create_child_frame,
     merge_on_failure,
     merge_on_success,
     track_address,
@@ -54,6 +60,7 @@ from ..state_tracker import (
     track_code_change,
     track_nonce_change,
 )
+from ..transactions import ENTRY_POINT
 from ..vm import Message
 from ..vm.eoa_delegation import get_delegated_code_address, set_delegation
 from ..vm.gas import GAS_CODE_DEPOSIT, charge_gas
@@ -89,6 +96,8 @@ class MessageCallOutput:
           4. `accounts_to_delete`: Contracts which have self-destructed.
           5. `error`: The error from the execution if any.
           6. `return_data`: The output of the execution.
+          7. `payer`: The payer selected by frame-transaction approvals.
+          8. `frame_logs`: Per-frame logs for frame transactions.
     """
 
     gas_left: Uint
@@ -97,8 +106,8 @@ class MessageCallOutput:
     accounts_to_delete: Set[Address]
     error: Optional[EthereumException]
     return_data: Bytes
-    accessed_addresses: Optional[Set[Address]] = None
-    accessed_storage_keys: Optional[Set[Tuple]] = None
+    payer: Optional[Address] = None
+    frame_logs: Tuple[Tuple[Log, ...], ...] = ()
 
 
 def process_message_call(message: Message) -> MessageCallOutput:
@@ -117,6 +126,9 @@ def process_message_call(message: Message) -> MessageCallOutput:
         Output of the message call
 
     """
+    if message.frame_tx is not None:
+        return process_frame_transaction_message(message)
+
     block_env = message.block_env
     refund_counter = U256(0)
     if message.target == Bytes0(b""):
@@ -142,7 +154,7 @@ def process_message_call(message: Message) -> MessageCallOutput:
         delegated_address = get_delegated_code_address(message.code)
         if delegated_address is not None:
             message.disable_precompiles = True
-            message.accessed_addresses.add(delegated_address)
+            message.tx_env.accessed_addresses.add(delegated_address)
             message.code = get_account(block_env.state, delegated_address).code
             message.code_address = delegated_address
             track_address(message.block_env.state_changes, delegated_address)
@@ -169,8 +181,137 @@ def process_message_call(message: Message) -> MessageCallOutput:
         accounts_to_delete=accounts_to_delete,
         error=evm.error,
         return_data=evm.output,
-        accessed_addresses=evm.accessed_addresses,
-        accessed_storage_keys=evm.accessed_storage_keys,
+    )
+
+
+def process_frame_transaction_message(message: Message) -> MessageCallOutput:
+    """
+    Execute a frame transaction using a single top-level message.
+
+    The top-level frame message carries the frame transaction payload in
+    ``message.frame_tx``. Individual frames are then executed as regular
+    message calls.
+    """
+    tx = message.frame_tx
+    if tx is None:
+        raise AssertionError("frame transaction payload is required")
+
+    tx_env = message.tx_env
+    tx_approval = tx_env.frame_tx_approval
+    frame_statuses = tx_env.frame_statuses
+
+    if tx_approval is None or frame_statuses is None:
+        raise AssertionError("frame transaction context is required")
+
+    tx_env.accessed_addresses.add(message.block_env.coinbase)
+    tx_env.accessed_addresses.update(PRE_COMPILED_CONTRACTS.keys())
+
+    total_gas_used = Uint(0)
+    frame_logs: List[Tuple[Log, ...]] = []
+
+    try:
+        for frame_index, frame in enumerate(tx.frames):
+            if isinstance(frame.target, Bytes0) or frame.target == Bytes0(b""):
+                target = tx.sender
+            else:
+                target = Address(frame.target)
+
+            if frame.mode == Uint(2):
+                if not tx_approval.sender_approved:
+                    raise FrameTransactionInvalidApprovalError(
+                        "SENDER mode before execution approval"
+                    )
+                caller = tx.sender
+            else:
+                caller = ENTRY_POINT
+
+            tx_env.origin = caller
+            tx_env.gas = frame.gas_limit
+            tx_env.transient_storage = TransientStorage()
+            tx_env.current_frame_index = frame_index
+
+            tx_env.accessed_addresses.add(target)
+            tx_env.accessed_addresses.add(caller)
+            tx_env.accessed_addresses.add(tx.sender)
+
+            code = get_account(message.block_env.state, target).code
+
+            call_frame = create_child_frame(tx_env.state_changes)
+            frame_message = Message(
+                block_env=message.block_env,
+                tx_env=tx_env,
+                caller=caller,
+                target=target,
+                current_target=target,
+                gas=frame.gas_limit,
+                value=U256(0),
+                data=frame.data,
+                code_address=target,
+                code=code,
+                depth=Uint(0),
+                should_transfer_value=False,
+                is_static=frame.mode == Uint(1),
+                disable_precompiles=False,
+                parent_evm=None,
+                is_create=False,
+                state_changes=call_frame,
+            )
+
+            sender_approved_before = tx_approval.sender_approved
+            payer_approved_before = tx_approval.payer_approved
+            payer_address_before = tx_approval.payer_address
+
+            tx_approval.approve_called_in_frame = False
+            frame_output = process_message_call(frame_message)
+
+            if frame_output.error is not None:
+                tx_approval.sender_approved = sender_approved_before
+                tx_approval.payer_approved = payer_approved_before
+                tx_approval.payer_address = payer_address_before
+                tx_approval.approve_called_in_frame = False
+
+            frame_gas_used = frame.gas_limit - frame_output.gas_left
+            total_gas_used += frame_gas_used
+
+            frame_status = 1 if frame_output.error is None else 0
+
+            if (
+                frame.mode == Uint(1)
+                and not tx_approval.approve_called_in_frame
+            ):
+                raise FrameTransactionInvalidFrameExecutionError(
+                    "VERIFY frame must successfully call APPROVE"
+                )
+
+            frame_statuses.append(frame_status)
+            frame_logs.append(frame_output.logs if frame_status == 1 else ())
+
+        if not tx_approval.payer_approved:
+            raise FrameTransactionInvalidFrameExecutionError(
+                "payer_approved must be true after all frames"
+            )
+    finally:
+        tx_env.current_frame_index = None
+
+    frame_gas_sum = Uint(0)
+    for frame in tx.frames:
+        frame_gas_sum += frame.gas_limit
+
+    gas_left = frame_gas_sum - total_gas_used
+
+    all_logs: Tuple[Log, ...] = ()
+    for logs in frame_logs:
+        all_logs += logs
+
+    return MessageCallOutput(
+        gas_left=gas_left,
+        refund_counter=U256(0),
+        logs=all_logs,
+        accounts_to_delete=set(),
+        error=None,
+        return_data=Bytes(b""),
+        payer=tx_approval.payer_address,
+        frame_logs=tuple(frame_logs),
     )
 
 
@@ -290,8 +431,8 @@ def process_message(message: Message) -> Evm:
         accounts_to_delete=set(),
         return_data=b"",
         error=None,
-        accessed_addresses=message.accessed_addresses,
-        accessed_storage_keys=message.accessed_storage_keys,
+        accessed_addresses=message.tx_env.accessed_addresses,
+        accessed_storage_keys=message.tx_env.accessed_storage_keys,
         state_changes=message.state_changes,
     )
 

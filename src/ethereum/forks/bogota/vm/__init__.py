@@ -26,7 +26,7 @@ from ..blocks import Log, Receipt, Withdrawal
 from ..fork_types import Address, Authorization, VersionedHash
 from ..state import State, TransientStorage
 from ..state_tracker import StateChanges, merge_on_failure, merge_on_success
-from ..transactions import LegacyTransaction
+from ..transactions import FrameTransaction, LegacyTransaction
 from ..trie import Trie
 
 __all__ = (
@@ -136,7 +136,17 @@ class TransactionEnvironment:
     index_in_block: Optional[Uint]
     tx_hash: Optional[Hash32]
     state_changes: "StateChanges" = field(default_factory=StateChanges)
-    frame_tx: Optional[object] = None
+    accessed_addresses: Set[Address] = field(default_factory=set)
+    """
+    Transaction-scoped warm account accesses.
+    """
+    accessed_storage_keys: Set[Tuple[Address, Bytes32]] = field(
+        default_factory=set
+    )
+    """
+    Transaction-scoped warm storage key accesses.
+    """
+    frame_tx: Optional[FrameTransaction] = None
     """
     Reference to the ``FrameTransaction`` for ``TXPARAM*`` opcodes.
     ``None`` for non-frame transactions.
@@ -177,11 +187,15 @@ class Message:
     depth: Uint
     should_transfer_value: bool
     is_static: bool
-    accessed_addresses: Set[Address]
-    accessed_storage_keys: Set[Tuple[Address, Bytes32]]
     disable_precompiles: bool
     parent_evm: Optional["Evm"]
     is_create: bool
+    frame_tx: Optional[FrameTransaction] = None
+    """
+    The frame transaction payload for top-level frame transaction dispatch.
+    ``None`` for non-frame transactions and for inner calls executed within
+    a frame transaction.
+    """
     state_changes: "StateChanges" = field(default_factory=StateChanges)
 
 

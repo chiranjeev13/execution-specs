@@ -47,10 +47,10 @@ def prepare_message(
         Items containing contract creation or message call specific data.
 
     """
-    accessed_addresses = set()
-    accessed_addresses.add(tx_env.origin)
-    accessed_addresses.update(PRE_COMPILED_CONTRACTS.keys())
-    accessed_addresses.update(tx_env.access_list_addresses)
+    tx_env.accessed_addresses.add(tx_env.origin)
+    tx_env.accessed_addresses.update(PRE_COMPILED_CONTRACTS.keys())
+    tx_env.accessed_addresses.update(tx_env.access_list_addresses)
+    tx_env.accessed_storage_keys.update(tx_env.access_list_storage_keys)
 
     if isinstance(tx.to, Bytes0):
         current_target = compute_contract_address(
@@ -68,7 +68,7 @@ def prepare_message(
     else:
         raise AssertionError("Target must be address or empty bytes")
 
-    accessed_addresses.add(current_target)
+    tx_env.accessed_addresses.add(current_target)
 
     # Create call frame as child of transaction frame
     call_frame = create_child_frame(tx_env.state_changes)
@@ -87,8 +87,6 @@ def prepare_message(
         code_address=code_address,
         should_transfer_value=True,
         is_static=False,
-        accessed_addresses=accessed_addresses,
-        accessed_storage_keys=set(tx_env.access_list_storage_keys),
         disable_precompiles=False,
         parent_evm=None,
         is_create=isinstance(tx.to, Bytes0),
