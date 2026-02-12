@@ -209,6 +209,16 @@ def process_abstract_call(message: Message) -> MessageCallOutput:
     tx_env.accessed_addresses.add(message.block_env.coinbase)
     tx_env.accessed_addresses.update(PRE_COMPILED_CONTRACTS.keys())
 
+    state = message.block_env.state
+    # Take a transaction-level snapshot so that get_storage_original()
+    # (which reads _snapshots[0]) always sees the pre-transaction state
+    # rather than the state at the start of the current frame.  Without
+    # this, the snapshot stack is empty between frames and each frame's
+    # begin_transaction creates a new _snapshots[0] that includes prior
+    # frames' mutations, leading to incorrect SSTORE gas metering.
+    tx_level_transient = TransientStorage()
+    begin_transaction(state, tx_level_transient)
+
     total_gas_used = Uint(0)
     frame_logs: List[Tuple[Log, ...]] = []
     accounts_to_delete: Set[Address] = set()
@@ -295,6 +305,11 @@ def process_abstract_call(message: Message) -> MessageCallOutput:
             raise FrameTransactionInvalidFrameExecutionError(
                 "payer_approved must be true after all frames"
             )
+
+        commit_transaction(state, tx_level_transient)
+    except Exception:
+        rollback_transaction(state, tx_level_transient)
+        raise
     finally:
         tx_env.current_frame_index = None
 

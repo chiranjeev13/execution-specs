@@ -490,6 +490,116 @@ def test_warm_account_access_across_frames(
     )
 
 
+def test_sstore_original_value_across_frames(
+    state_test: StateTestFiller,
+    pre: Alloc,
+    fork: Fork,
+) -> None:
+    """SSTORE original value must be the pre-transaction value, not per-frame.
+
+    A single contract uses CALLDATALOAD(0) to branch:
+      - Frame 1 sends data=0x01: writes slot 0x42 from 0 → 1 (SET cost).
+      - Frame 2 sends data=0x00: writes slot 0x42 from 1 → 0, measuring
+        gas around the SSTORE.
+
+    Because the original (pre-transaction) value of slot 0x42 is 0, and
+    Frame 2 restores it to 0, the SSTORE gas path is
+    ``original != current, original == new`` → GAS_WARM_ACCESS.
+
+    If get_storage_original were frame-local, Frame 2 would see
+    original=1 (Frame 1's committed value) and treat the write as
+    ``original == current, current != new`` with original!=0 →
+    GAS_STORAGE_UPDATE, producing a different measured gas value.
+    """
+    sender = _approve_sender(pre)
+
+    gas_costs = fork.gas_costs()
+    storage_slot = 0x42
+    gas_result_slot = 0x01
+
+    # Single contract that branches on calldata:
+    #   CALLDATALOAD(0) != 0  → SSTORE(slot, 1); STOP   (frame 1: set)
+    #   CALLDATALOAD(0) == 0  → GAS; SSTORE(slot, 0);
+    #                            SSTORE(result, SUB(SWAP1, GAS)); STOP
+    target_code = Conditional(
+        condition=Op.CALLDATALOAD(0),
+        if_true=Op.SSTORE(storage_slot, 1) + Op.STOP,
+        if_false=(
+            Op.GAS
+            + Op.SSTORE(storage_slot, 0)
+            + Op.SSTORE(gas_result_slot, Op.SUB(Op.SWAP1, Op.GAS))
+            + Op.STOP
+        ),
+    )
+    target = pre.deploy_contract(code=target_code)
+
+    # Expected: SSTORE cost = GAS_WARM_ACCESS (100) because
+    # original(0) != current(1) but original(0) == new(0) triggers
+    # the "restoring to original" path which charges GAS_WARM_ACCESS.
+    # The extra cost is from the GAS, SUB, SWAP1 opcodes and the second
+    # SSTORE (storing gas_result_slot, also warm from the branching
+    # code's SLOAD-like access).
+    expected_sstore_cost = gas_costs.G_WARM_SLOAD
+
+    frames = [
+        build_frame(
+            mode=Spec.MODE_VERIFY,
+            target=sender,
+            gas_limit=40_000,
+            data=b"",
+        ),
+        build_frame(
+            mode=Spec.MODE_SENDER,
+            target=target,
+            gas_limit=60_000,
+            # Non-zero calldata → set branch
+            data=b"\x01",
+        ),
+        build_frame(
+            mode=Spec.MODE_SENDER,
+            target=target,
+            gas_limit=60_000,
+            # Zero calldata → measure/clear branch
+            data=b"",
+        ),
+    ]
+    tx = make_frame_tx(
+        sender=sender,
+        frames=frames,
+        max_fee_per_gas=7,
+        max_priority_fee_per_gas=0,
+    )
+
+    # The measured gas (gas_before - gas_after) spans the instructions
+    # between GAS₁ and GAS₂ in the clear branch:
+    #   PUSH1 0      (G_VERY_LOW = 3)
+    #   PUSH1 0x42   (G_VERY_LOW = 3)
+    #   SSTORE       (the cost we care about)
+    #   GAS₂         (G_BASE = 2)
+    extra_cost = gas_costs.G_VERY_LOW * 2 + gas_costs.G_BASE
+    expected_measured = expected_sstore_cost + extra_cost
+
+    state_test(
+        env=Environment(),
+        pre=pre,
+        tx=tx,
+        post={
+            sender: Account(
+                code=approve_bytecode(Spec.APPROVE_BOTH),
+                nonce=2,
+            ),
+            target: Account(
+                storage={
+                    # Slot should be back to 0 (frame 2 restored it)
+                    storage_slot: 0,
+                    # Measured gas for the SSTORE in frame 2
+                    gas_result_slot: expected_measured,
+                },
+            ),
+        },
+    )
+
+
 def test_block_gas_pool_return(
     blockchain_test: BlockchainTestFiller,
     pre: Alloc,
