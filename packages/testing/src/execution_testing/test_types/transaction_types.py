@@ -31,6 +31,7 @@ from execution_testing.base_types import (
     TestAddress,
     TestPrivateKey,
 )
+from execution_testing.base_types.serialization import to_serializable_element
 from execution_testing.exceptions import TransactionException
 from execution_testing.forks import Fork
 from execution_testing.logging import (
@@ -205,10 +206,6 @@ class FrameGeneric(CamelModel, Generic[NumberBoundTypeVar], RLPSerializable):
 
     def to_list(self, *, signing: bool = False) -> list:
         """Return frame fields as a list for RLP encoding."""
-        from execution_testing.base_types.serialization import (
-            to_serializable_element,
-        )
-
         return [
             to_serializable_element(self.mode),
             bytes(self.target) if self.target is not None else b"",

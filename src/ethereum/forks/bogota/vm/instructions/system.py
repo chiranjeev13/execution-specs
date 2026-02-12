@@ -33,6 +33,7 @@ from ...state_tracker import (
     track_balance_change,
     track_nonce_change,
 )
+from ...transactions import FrameTransaction
 from ...utils.address import (
     compute_contract_address,
     compute_create2_contract_address,
@@ -43,11 +44,17 @@ from ...vm.eoa_delegation import (
 )
 from .. import (
     Evm,
+    FrameTxApprovalContext,
     Message,
     incorporate_child_on_error,
     incorporate_child_on_success,
 )
-from ..exceptions import OutOfGasError, Revert, WriteInStaticContext
+from ..exceptions import (
+    ExceptionalHalt,
+    OutOfGasError,
+    Revert,
+    WriteInStaticContext,
+)
 from ..gas import (
     GAS_CALL_VALUE,
     GAS_COLD_ACCOUNT_ACCESS,
@@ -67,6 +74,50 @@ from ..gas import (
 )
 from ..memory import memory_read_bytes, memory_write
 from ..stack import pop, push
+
+
+class FrameTxNotActiveError(ExceptionalHalt):
+    """Raised when frame tx opcodes are used outside a frame transaction."""
+
+
+class InvalidApproveScope(ExceptionalHalt):
+    """Raised when APPROVE is called with an invalid scope."""
+
+
+def _get_frame_tx(evm: Evm) -> FrameTransaction:
+    """Get the active frame transaction or raise."""
+    tx = evm.message.tx_env.frame_tx
+    if tx is None or not isinstance(tx, FrameTransaction):
+        raise FrameTxNotActiveError
+    return tx
+
+
+def _get_frame_tx_approval(evm: Evm) -> FrameTxApprovalContext:
+    """Get the active frame transaction approval context or raise."""
+    frame_tx_approval = evm.message.tx_env.frame_tx_approval
+    if frame_tx_approval is None:
+        raise FrameTxNotActiveError
+    return frame_tx_approval
+
+
+def _get_current_frame_target(evm: Evm, tx: FrameTransaction):
+    """Resolve the target address of the currently executing frame."""
+    frame_idx = evm.message.tx_env.current_frame_index
+    if frame_idx is None:
+        raise FrameTxNotActiveError
+    if frame_idx >= len(tx.frames):
+        raise FrameTxNotActiveError
+
+    frame = tx.frames[frame_idx]
+    if isinstance(frame.target, Bytes0) or frame.target == Bytes0(b""):
+        return tx.sender
+    return frame.target
+
+
+def _revert_frame(evm: Evm) -> None:
+    """Revert the current frame with empty output."""
+    evm.output = Bytes(b"")
+    raise Revert
 
 
 def generic_create(
@@ -273,6 +324,127 @@ def create2(evm: Evm) -> None:
 
     # PROGRAM COUNTER
     evm.pc += Uint(1)
+
+
+def approve(evm: Evm) -> None:
+    """
+    ``APPROVE`` opcode (``0xAA``).
+
+    Like ``RETURN`` but with a scope operand that updates transaction-scoped
+    approval state.
+
+    Stack (top first): ``offset``, ``length``, ``scope``.
+
+    Parameters
+    ----------
+    evm :
+        The current EVM frame.
+
+    """
+    # STACK
+    offset = pop(evm.stack)
+    length = pop(evm.stack)
+    scope = pop(evm.stack)
+
+    # GAS
+    extend_memory = calculate_gas_extend_memory(evm.memory, [(offset, length)])
+    charge_gas(evm, GAS_ZERO + extend_memory.cost)
+
+    # OPERATION
+    tx = _get_frame_tx(evm)
+    tx_approval = _get_frame_tx_approval(evm)
+
+    if scope > U256(2):
+        raise InvalidApproveScope
+
+    frame_target = _get_current_frame_target(evm, tx)
+    if evm.message.caller != frame_target:
+        _revert_frame(evm)
+
+    state = evm.message.block_env.state
+    tx_state_changes = evm.message.tx_env.state_changes
+    frame_state_changes = evm.state_changes
+
+    if scope == U256(0):
+        if tx_approval.sender_approved:
+            _revert_frame(evm)
+        if evm.message.caller != tx.sender:
+            _revert_frame(evm)
+        tx_approval.sender_approved = True
+
+    elif scope == U256(1):
+        if tx_approval.payer_approved:
+            _revert_frame(evm)
+        if not tx_approval.sender_approved:
+            _revert_frame(evm)
+
+        payer_balance = get_account(state, frame_target).balance
+        if Uint(payer_balance) < tx_approval.tx_fee:
+            _revert_frame(evm)
+
+        track_address(frame_state_changes, tx.sender)
+        increment_nonce(state, tx.sender)
+        sender_nonce_after = get_account(state, tx.sender).nonce
+        track_nonce_change(
+            frame_state_changes,
+            tx.sender,
+            U64(sender_nonce_after),
+        )
+
+        track_address(frame_state_changes, frame_target)
+        capture_pre_balance(tx_state_changes, frame_target, payer_balance)
+        payer_balance_after = U256(Uint(payer_balance) - tx_approval.tx_fee)
+        set_account_balance(state, frame_target, payer_balance_after)
+        track_balance_change(
+            frame_state_changes,
+            frame_target,
+            payer_balance_after,
+        )
+
+        tx_approval.payer_approved = True
+        tx_approval.payer_address = frame_target
+
+    else:  # scope == 2
+        if tx_approval.sender_approved or tx_approval.payer_approved:
+            _revert_frame(evm)
+        if evm.message.caller != tx.sender:
+            _revert_frame(evm)
+
+        payer_balance = get_account(state, frame_target).balance
+        if Uint(payer_balance) < tx_approval.tx_fee:
+            _revert_frame(evm)
+
+        tx_approval.sender_approved = True
+
+        track_address(frame_state_changes, tx.sender)
+        increment_nonce(state, tx.sender)
+        sender_nonce_after = get_account(state, tx.sender).nonce
+        track_nonce_change(
+            frame_state_changes,
+            tx.sender,
+            U64(sender_nonce_after),
+        )
+
+        track_address(frame_state_changes, frame_target)
+        capture_pre_balance(tx_state_changes, frame_target, payer_balance)
+        payer_balance_after = U256(Uint(payer_balance) - tx_approval.tx_fee)
+        set_account_balance(state, frame_target, payer_balance_after)
+        track_balance_change(
+            frame_state_changes,
+            frame_target,
+            payer_balance_after,
+        )
+
+        tx_approval.payer_approved = True
+        tx_approval.payer_address = frame_target
+
+    evm.memory += b"\x00" * extend_memory.expand_by
+    evm.output = Bytes(bytes(evm.memory[offset : offset + length]))
+    tx_approval.approve_called_in_frame = True
+    evm.running = False
+
+    # PROGRAM COUNTER
+    pass
 
 
 def return_(evm: Evm) -> None:
