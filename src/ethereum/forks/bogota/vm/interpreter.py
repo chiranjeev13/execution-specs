@@ -60,7 +60,11 @@ from ..state_tracker import (
     track_code_change,
     track_nonce_change,
 )
-from ..transactions import ENTRY_POINT
+from ..transactions import (
+    ENTRY_POINT,
+    FRAME_MODE_SENDER,
+    FRAME_MODE_VERIFY,
+)
 from ..vm import Message
 from ..vm.eoa_delegation import get_delegated_code_address, set_delegation
 from ..vm.gas import GAS_CODE_DEPOSIT, charge_gas
@@ -216,7 +220,7 @@ def process_abstract_call(message: Message) -> MessageCallOutput:
             else:
                 target = Address(frame.target)
 
-            if frame.mode == Uint(2):
+            if frame.mode == FRAME_MODE_SENDER:
                 if not tx_approval.sender_approved:
                     raise FrameTransactionInvalidApprovalError(
                         "SENDER mode before execution approval"
@@ -250,7 +254,7 @@ def process_abstract_call(message: Message) -> MessageCallOutput:
                 code=code,
                 depth=Uint(0),
                 should_transfer_value=False,
-                is_static=frame.mode == Uint(1),
+                is_static=frame.mode == FRAME_MODE_VERIFY,
                 disable_precompiles=False,
                 parent_evm=None,
                 is_create=False,
@@ -277,7 +281,7 @@ def process_abstract_call(message: Message) -> MessageCallOutput:
             frame_status = 1 if frame_output.error is None else 0
 
             if (
-                frame.mode == Uint(1)
+                frame.mode == FRAME_MODE_VERIFY
                 and not tx_approval.approve_called_in_frame
             ):
                 raise FrameTransactionInvalidFrameExecutionError(

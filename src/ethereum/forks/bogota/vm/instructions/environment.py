@@ -22,6 +22,7 @@ from ...fork_types import EMPTY_ACCOUNT
 from ...state import get_account
 from ...state_tracker import track_address
 from ...transactions import (
+    FRAME_MODE_VERIFY,
     FrameTransaction,
     calculate_intrinsic_cost,
     signing_hash_8141,
@@ -149,7 +150,7 @@ def _get_txparam_value(
         if index >= len(tx.frames):
             raise TxParamOutOfBounds
         frame = tx.frames[index]
-        if frame.mode == Uint(1):  # VERIFY
+        if frame.mode == FRAME_MODE_VERIFY:
             return (b"", Uint(0))
         data = bytes(frame.data)
         return (data, Uint(len(data)))

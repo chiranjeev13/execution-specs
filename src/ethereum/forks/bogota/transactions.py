@@ -97,6 +97,38 @@ Maximum number of frames allowed in a frame transaction.
 [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
 """
 
+FRAME_MODE_DEFAULT = Uint(0)
+"""
+Default frame execution mode. The frame is called by the
+:const:`ENTRY_POINT` address.
+
+[EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+"""
+
+FRAME_MODE_VERIFY = Uint(1)
+"""
+Verification frame execution mode. The frame is executed with static-call
+semantics and must exit via the ``APPROVE`` opcode.
+
+[EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+"""
+
+FRAME_MODE_SENDER = Uint(2)
+"""
+Sender frame execution mode. The frame is called by ``tx.sender`` and
+requires prior execution approval.
+
+[EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+"""
+
+NUM_FRAME_MODES = Uint(3)
+"""
+Total number of valid frame modes. Frame mode values must be strictly
+less than this.
+
+[EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+"""
+
 
 @slotted_freezable
 @dataclass
@@ -689,7 +721,7 @@ def validate_transaction(tx: Transaction) -> Tuple[Uint, Uint]:
             raise FrameTransactionInvalidFormatError("sender must be 20 bytes")
 
         for frame in tx.frames:
-            if frame.mode >= Uint(3):
+            if frame.mode >= NUM_FRAME_MODES:
                 raise FrameTransactionInvalidFormatError(
                     "frame mode must be < 3"
                 )
@@ -1079,7 +1111,7 @@ def signing_hash_8141(tx: FrameTransaction) -> Hash32:
     """
     elided_frames: list = []
     for frame in tx.frames:
-        if frame.mode == Uint(1):  # VERIFY
+        if frame.mode == FRAME_MODE_VERIFY:
             elided_frames.append(
                 Frame(
                     mode=frame.mode,
