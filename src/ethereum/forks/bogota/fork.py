@@ -1014,9 +1014,6 @@ def process_transaction(
         Index of the transaction in the block.
 
     """
-    if isinstance(tx, FrameTransaction):
-        return process_frame_transaction(block_env, block_output, tx, index)
-
     # EIP-7928: Create a transaction-level StateChanges frame
     # The frame will read the current block_access_index from the block frame
     increment_block_access_index(block_env.state_changes)
@@ -1050,123 +1047,196 @@ def process_transaction(
         tx=tx,
     )
 
-    sender_account = get_account(block_env.state, sender)
-
-    if isinstance(tx, BlobTransaction):
+    if (
+        isinstance(tx, (BlobTransaction, FrameTransaction))
+        and len(tx.blob_versioned_hashes) > 0
+    ):
         blob_gas_fee = calculate_data_fee(block_env.excess_blob_gas, tx)
     else:
         blob_gas_fee = Uint(0)
 
-    effective_gas_fee = tx.gas * effective_gas_price
-
-    gas = tx.gas - intrinsic_gas
-
-    # Track sender nonce increment
-    increment_nonce(block_env.state, sender)
-    sender_nonce_after = get_account(block_env.state, sender).nonce
-    track_nonce_change(tx_state_changes, sender, U64(sender_nonce_after))
-
-    # Track sender balance deduction for gas fee
-    sender_balance_before = get_account(block_env.state, sender).balance
+    # Track sender pre-state for net-zero filtering
     track_address(tx_state_changes, sender)
+    sender_balance_before = get_account(block_env.state, sender).balance
     capture_pre_balance(tx_state_changes, sender, sender_balance_before)
 
-    sender_balance_after_gas_fee = (
-        Uint(sender_account.balance) - effective_gas_fee - blob_gas_fee
-    )
-    set_account_balance(
-        block_env.state, sender, U256(sender_balance_after_gas_fee)
-    )
+    tx_hash = get_transaction_hash(encode_transaction(tx))
+
+    tx_output: MessageCallOutput
+    tx_gas_used_after_refund: Uint
+    gas_refund_amount: Uint
+    payer: Address
+    tx_logs: Tuple[Log, ...]
+
+    if isinstance(tx, FrameTransaction):
+        tx_gas_limit = intrinsic_gas
+
+        tx_fee = tx_gas_limit * effective_gas_price + blob_gas_fee
+        frame_tx_approval = vm.FrameTxApprovalContext(tx_fee=tx_fee)
+        frame_statuses: List[int] = []
+
+        tx_env = vm.TransactionEnvironment(
+            origin=sender,
+            gas_price=effective_gas_price,
+            gas=tx_gas_limit,
+            access_list_addresses=set(),
+            access_list_storage_keys=set(),
+            transient_storage=TransientStorage(),
+            blob_versioned_hashes=blob_versioned_hashes,
+            authorizations=(),
+            index_in_block=index,
+            tx_hash=tx_hash,
+            state_changes=tx_state_changes,
+            frame_tx=tx,
+            frame_tx_approval=frame_tx_approval,
+            current_frame_index=None,
+            frame_statuses=frame_statuses,
+        )
+
+        tx_message = vm.Message(
+            block_env=block_env,
+            tx_env=tx_env,
+            caller=sender,
+            target=sender,
+            current_target=sender,
+            gas=tx_gas_limit,
+            value=U256(0),
+            data=Bytes(b""),
+            code_address=sender,
+            code=Bytes(b""),
+            depth=Uint(0),
+            should_transfer_value=False,
+            is_static=False,
+            disable_precompiles=False,
+            parent_evm=None,
+            is_create=False,
+            frames=tx.frames,
+            state_changes=create_child_frame(tx_state_changes),
+        )
+
+        tx_output = process_abstract_call(tx_message)
+
+        gas_refund = tx_output.gas_left
+        tx_gas_used_after_refund = tx_gas_limit - gas_refund
+        gas_refund_amount = gas_refund * effective_gas_price
+
+        assert tx_output.payer is not None
+        payer = tx_output.payer
+
+        tx_logs = ()
+        for frame_logs in tx_output.frame_logs:
+            tx_logs += frame_logs
+    else:
+        effective_gas_fee = tx.gas * effective_gas_price
+        gas = tx.gas - intrinsic_gas
+
+        # Track sender nonce increment
+        increment_nonce(block_env.state, sender)
+        sender_nonce_after = get_account(block_env.state, sender).nonce
+        track_nonce_change(tx_state_changes, sender, U64(sender_nonce_after))
+
+        # Track sender balance deduction for gas fee
+        sender_balance_after_gas_fee = (
+            Uint(sender_balance_before) - effective_gas_fee - blob_gas_fee
+        )
+        set_account_balance(
+            block_env.state, sender, U256(sender_balance_after_gas_fee)
+        )
+        track_balance_change(
+            tx_state_changes,
+            sender,
+            U256(sender_balance_after_gas_fee),
+        )
+
+        access_list_addresses = set()
+        access_list_storage_keys = set()
+        access_list_addresses.add(block_env.coinbase)
+        if isinstance(
+            tx,
+            (
+                AccessListTransaction,
+                FeeMarketTransaction,
+                BlobTransaction,
+                SetCodeTransaction,
+            ),
+        ):
+            for access in tx.access_list:
+                access_list_addresses.add(access.account)
+                for slot in access.slots:
+                    access_list_storage_keys.add((access.account, slot))
+
+        authorizations: Tuple[Authorization, ...] = ()
+        if isinstance(tx, SetCodeTransaction):
+            authorizations = tx.authorizations
+
+        tx_env = vm.TransactionEnvironment(
+            origin=sender,
+            gas_price=effective_gas_price,
+            gas=gas,
+            access_list_addresses=access_list_addresses,
+            access_list_storage_keys=access_list_storage_keys,
+            transient_storage=TransientStorage(),
+            blob_versioned_hashes=blob_versioned_hashes,
+            authorizations=authorizations,
+            index_in_block=index,
+            tx_hash=tx_hash,
+            state_changes=tx_state_changes,
+        )
+
+        message = prepare_message(
+            block_env,
+            tx_env,
+            tx,
+        )
+
+        tx_output = process_message_call(message)
+
+        # For EIP-7623 we first calculate the execution_gas_used, which
+        # includes the execution gas refund.
+        tx_gas_used_before_refund = tx.gas - tx_output.gas_left
+        tx_gas_refund = min(
+            tx_gas_used_before_refund // Uint(5),
+            Uint(tx_output.refund_counter),
+        )
+        tx_gas_used_after_refund = tx_gas_used_before_refund - tx_gas_refund
+
+        # Transactions with less execution_gas_used than the floor pay at the
+        # floor cost.
+        tx_gas_used_after_refund = max(
+            tx_gas_used_after_refund, calldata_floor_gas_cost
+        )
+
+        tx_gas_left = tx.gas - tx_gas_used_after_refund
+        gas_refund_amount = tx_gas_left * effective_gas_price
+
+        payer = sender
+        tx_logs = tx_output.logs
+
+    payer_balance_after_refund = get_account(
+        block_env.state, payer
+    ).balance + U256(gas_refund_amount)
+    set_account_balance(block_env.state, payer, payer_balance_after_refund)
     track_balance_change(
         tx_state_changes,
-        sender,
-        U256(sender_balance_after_gas_fee),
+        payer,
+        payer_balance_after_refund,
     )
-
-    access_list_addresses = set()
-    access_list_storage_keys = set()
-    access_list_addresses.add(block_env.coinbase)
-    if isinstance(
-        tx,
-        (
-            AccessListTransaction,
-            FeeMarketTransaction,
-            BlobTransaction,
-            SetCodeTransaction,
-        ),
-    ):
-        for access in tx.access_list:
-            access_list_addresses.add(access.account)
-            for slot in access.slots:
-                access_list_storage_keys.add((access.account, slot))
-
-    authorizations: Tuple[Authorization, ...] = ()
-    if isinstance(tx, SetCodeTransaction):
-        authorizations = tx.authorizations
-
-    tx_env = vm.TransactionEnvironment(
-        origin=sender,
-        gas_price=effective_gas_price,
-        gas=gas,
-        access_list_addresses=access_list_addresses,
-        access_list_storage_keys=access_list_storage_keys,
-        transient_storage=TransientStorage(),
-        blob_versioned_hashes=blob_versioned_hashes,
-        authorizations=authorizations,
-        index_in_block=index,
-        tx_hash=get_transaction_hash(encode_transaction(tx)),
-        state_changes=tx_state_changes,
-    )
-
-    message = prepare_message(
-        block_env,
-        tx_env,
-        tx,
-    )
-
-    tx_output = process_message_call(message)
-
-    # For EIP-7623 we first calculate the execution_gas_used, which includes
-    # the execution gas refund.
-    tx_gas_used_before_refund = tx.gas - tx_output.gas_left
-    tx_gas_refund = min(
-        tx_gas_used_before_refund // Uint(5), Uint(tx_output.refund_counter)
-    )
-    tx_gas_used_after_refund = tx_gas_used_before_refund - tx_gas_refund
-
-    # Transactions with less execution_gas_used than the floor pay at the
-    # floor cost.
-    tx_gas_used_after_refund = max(
-        tx_gas_used_after_refund, calldata_floor_gas_cost
-    )
-
-    tx_gas_left = tx.gas - tx_gas_used_after_refund
-    gas_refund_amount = tx_gas_left * effective_gas_price
 
     # For non-1559 transactions effective_gas_price == tx.gas_price
     priority_fee_per_gas = effective_gas_price - block_env.base_fee_per_gas
     transaction_fee = tx_gas_used_after_refund * priority_fee_per_gas
-
-    # refund gas
-    sender_balance_after_refund = get_account(
-        block_env.state, sender
-    ).balance + U256(gas_refund_amount)
-    set_account_balance(block_env.state, sender, sender_balance_after_refund)
-    track_balance_change(
-        tx_env.state_changes,
-        sender,
-        sender_balance_after_refund,
-    )
 
     coinbase_balance_after_mining_fee = get_account(
         block_env.state, block_env.coinbase
     ).balance + U256(transaction_fee)
 
     set_account_balance(
-        block_env.state, block_env.coinbase, coinbase_balance_after_mining_fee
+        block_env.state,
+        block_env.coinbase,
+        coinbase_balance_after_mining_fee,
     )
     track_balance_change(
-        tx_env.state_changes,
+        tx_state_changes,
         block_env.coinbase,
         coinbase_balance_after_mining_fee,
     )
@@ -1180,193 +1250,10 @@ def process_transaction(
     block_output.blob_gas_used += tx_blob_gas_used
 
     receipt = make_receipt(
-        tx, tx_output.error, block_output.block_gas_used, tx_output.logs
-    )
-
-    receipt_key = rlp.encode(Uint(index))
-    block_output.receipt_keys += (receipt_key,)
-
-    trie_set(
-        block_output.receipts_trie,
-        receipt_key,
-        receipt,
-    )
-
-    block_output.block_logs += tx_output.logs
-
-    for address in tx_output.accounts_to_delete:
-        destroy_account(block_env.state, address)
-        track_selfdestruct(tx_env.state_changes, address)
-
-    # EIP-7928: Commit transaction frame (includes net-zero filtering).
-    # Must happen AFTER destroy_account so filtering sees correct state.
-    commit_transaction_frame(tx_env.state_changes)
-
-
-def process_frame_transaction(
-    block_env: vm.BlockEnvironment,
-    block_output: vm.BlockOutput,
-    tx: FrameTransaction,
-    index: Uint,
-) -> None:
-    """
-    Process a frame transaction as defined in [EIP-8141].
-
-    Frame execution itself is dispatched through
-    ``process_abstract_call(message)`` using a single top-level message for
-    the transaction.
-
-    Parameters
-    ----------
-    block_env :
-        The block scoped environment.
-    block_output :
-        The block output for the current block.
-    tx :
-        The frame transaction.
-    index :
-        The index of the transaction in the block.
-
-    [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
-
-    """
-    # EIP-7928: Create a transaction-level StateChanges frame
-    increment_block_access_index(block_env.state_changes)
-    tx_state_changes = create_child_frame(block_env.state_changes)
-
-    # Capture coinbase pre-balance
-    coinbase_pre_balance = get_account(
-        block_env.state, block_env.coinbase
-    ).balance
-    track_address(tx_state_changes, block_env.coinbase)
-    capture_pre_balance(
-        tx_state_changes, block_env.coinbase, coinbase_pre_balance
-    )
-
-    trie_set(
-        block_output.transactions_trie,
-        rlp.encode(index),
-        encode_transaction(tx),
-    )
-
-    intrinsic_gas, _ = validate_transaction(tx)
-    tx_gas_limit = intrinsic_gas
-
-    (
-        sender,
-        effective_gas_price,
-        blob_versioned_hashes,
-        tx_blob_gas_used,
-    ) = check_transaction(
-        block_env=block_env,
-        block_output=block_output,
-        tx=tx,
-    )
-
-    if len(tx.blob_versioned_hashes) > 0:
-        blob_gas_fee = calculate_data_fee(block_env.excess_blob_gas, tx)
-    else:
-        blob_gas_fee = Uint(0)
-
-    # Track sender pre-state
-    track_address(tx_state_changes, sender)
-    sender_balance_before = get_account(block_env.state, sender).balance
-    capture_pre_balance(tx_state_changes, sender, sender_balance_before)
-
-    tx_fee = tx_gas_limit * effective_gas_price + blob_gas_fee
-    frame_tx_approval = vm.FrameTxApprovalContext(tx_fee=tx_fee)
-    frame_statuses: List[int] = []
-
-    tx_env = vm.TransactionEnvironment(
-        origin=sender,
-        gas_price=effective_gas_price,
-        gas=tx_gas_limit,
-        access_list_addresses=set(),
-        access_list_storage_keys=set(),
-        transient_storage=TransientStorage(),
-        blob_versioned_hashes=blob_versioned_hashes,
-        authorizations=(),
-        index_in_block=index,
-        tx_hash=get_transaction_hash(encode_transaction(tx)),
-        state_changes=tx_state_changes,
-        frame_tx=tx,
-        frame_tx_approval=frame_tx_approval,
-        current_frame_index=None,
-        frame_statuses=frame_statuses,
-    )
-
-    tx_message = vm.Message(
-        block_env=block_env,
-        tx_env=tx_env,
-        caller=sender,
-        target=sender,
-        current_target=sender,
-        gas=tx_gas_limit,
-        value=U256(0),
-        data=Bytes(b""),
-        code_address=sender,
-        code=Bytes(b""),
-        depth=Uint(0),
-        should_transfer_value=False,
-        is_static=False,
-        disable_precompiles=False,
-        parent_evm=None,
-        is_create=False,
-        frames=tx.frames,
-        state_changes=create_child_frame(tx_state_changes),
-    )
-
-    tx_output = process_abstract_call(tx_message)
-
-    gas_refund = tx_output.gas_left
-    gas_refund_amount = gas_refund * effective_gas_price
-
-    assert tx_output.payer is not None
-    payer_balance_after_refund = get_account(
-        block_env.state, tx_output.payer
-    ).balance + U256(gas_refund_amount)
-    set_account_balance(
-        block_env.state,
-        tx_output.payer,
-        payer_balance_after_refund,
-    )
-    track_balance_change(
-        tx_state_changes,
-        tx_output.payer,
-        payer_balance_after_refund,
-    )
-
-    tx_gas_used_after_refund = tx_gas_limit - gas_refund
-    priority_fee_per_gas = effective_gas_price - block_env.base_fee_per_gas
-    transaction_fee = tx_gas_used_after_refund * priority_fee_per_gas
-
-    coinbase_balance_after = get_account(
-        block_env.state, block_env.coinbase
-    ).balance + U256(transaction_fee)
-    set_account_balance(
-        block_env.state, block_env.coinbase, coinbase_balance_after
-    )
-    track_balance_change(
-        tx_state_changes, block_env.coinbase, coinbase_balance_after
-    )
-
-    if coinbase_balance_after == 0 and account_exists_and_is_empty(
-        block_env.state, block_env.coinbase
-    ):
-        destroy_account(block_env.state, block_env.coinbase)
-
-    block_output.block_gas_used += tx_gas_used_after_refund
-    block_output.blob_gas_used += tx_blob_gas_used
-
-    all_logs: Tuple[Log, ...] = ()
-    for frame_logs in tx_output.frame_logs:
-        all_logs += frame_logs
-
-    receipt = make_receipt(
         tx,
         tx_output.error,
         block_output.block_gas_used,
-        all_logs,
+        tx_logs,
     )
 
     receipt_key = rlp.encode(Uint(index))
@@ -1378,13 +1265,14 @@ def process_frame_transaction(
         receipt,
     )
 
-    block_output.block_logs += all_logs
+    block_output.block_logs += tx_logs
 
     for address in tx_output.accounts_to_delete:
         destroy_account(block_env.state, address)
         track_selfdestruct(tx_state_changes, address)
 
-    # EIP-7928: Commit transaction frame
+    # EIP-7928: Commit transaction frame (includes net-zero filtering).
+    # Must happen AFTER destroy_account so filtering sees correct state.
     commit_transaction_frame(tx_state_changes)
 
 

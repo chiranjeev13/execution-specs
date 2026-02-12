@@ -207,6 +207,7 @@ def process_abstract_call(message: Message) -> MessageCallOutput:
 
     total_gas_used = Uint(0)
     frame_logs: List[Tuple[Log, ...]] = []
+    accounts_to_delete: Set[Address] = set()
 
     try:
         for frame_index, frame in enumerate(frames):
@@ -262,6 +263,7 @@ def process_abstract_call(message: Message) -> MessageCallOutput:
 
             tx_approval.approve_called_in_frame = False
             frame_output = process_message_call(frame_message)
+            accounts_to_delete.update(frame_output.accounts_to_delete)
 
             if frame_output.error is not None:
                 tx_approval.sender_approved = sender_approved_before
@@ -306,7 +308,7 @@ def process_abstract_call(message: Message) -> MessageCallOutput:
         gas_left=gas_left,
         refund_counter=U256(0),
         logs=all_logs,
-        accounts_to_delete=set(),
+        accounts_to_delete=accounts_to_delete,
         error=None,
         return_data=Bytes(b""),
         payer=tx_approval.payer_address,
