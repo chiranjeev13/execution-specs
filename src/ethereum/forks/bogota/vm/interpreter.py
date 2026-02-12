@@ -126,9 +126,6 @@ def process_message_call(message: Message) -> MessageCallOutput:
         Output of the message call
 
     """
-    if message.frame_tx is not None:
-        return process_frame_transaction_message(message)
-
     block_env = message.block_env
     refund_counter = U256(0)
     if message.target == Bytes0(b""):
@@ -184,17 +181,19 @@ def process_message_call(message: Message) -> MessageCallOutput:
     )
 
 
-def process_frame_transaction_message(message: Message) -> MessageCallOutput:
+def process_abstract_call(message: Message) -> MessageCallOutput:
     """
     Execute a frame transaction using a single top-level message.
 
-    The top-level frame message carries the frame transaction payload in
-    ``message.frame_tx``. Individual frames are then executed as regular
+    The top-level frame message carries the frame payload in
+    ``message.frames``. Individual frames are then executed as regular
     message calls.
     """
-    tx = message.frame_tx
-    if tx is None:
-        raise AssertionError("frame transaction payload is required")
+    frames = message.frames
+    if frames is None:
+        raise AssertionError("frame payload is required")
+
+    frame_tx_sender = message.caller
 
     tx_env = message.tx_env
     tx_approval = tx_env.frame_tx_approval
@@ -210,9 +209,9 @@ def process_frame_transaction_message(message: Message) -> MessageCallOutput:
     frame_logs: List[Tuple[Log, ...]] = []
 
     try:
-        for frame_index, frame in enumerate(tx.frames):
+        for frame_index, frame in enumerate(frames):
             if isinstance(frame.target, Bytes0) or frame.target == Bytes0(b""):
-                target = tx.sender
+                target = frame_tx_sender
             else:
                 target = Address(frame.target)
 
@@ -221,7 +220,7 @@ def process_frame_transaction_message(message: Message) -> MessageCallOutput:
                     raise FrameTransactionInvalidApprovalError(
                         "SENDER mode before execution approval"
                     )
-                caller = tx.sender
+                caller = frame_tx_sender
             else:
                 caller = ENTRY_POINT
 
@@ -232,7 +231,7 @@ def process_frame_transaction_message(message: Message) -> MessageCallOutput:
 
             tx_env.accessed_addresses.add(target)
             tx_env.accessed_addresses.add(caller)
-            tx_env.accessed_addresses.add(tx.sender)
+            tx_env.accessed_addresses.add(frame_tx_sender)
 
             code = get_account(message.block_env.state, target).code
 
@@ -294,7 +293,7 @@ def process_frame_transaction_message(message: Message) -> MessageCallOutput:
         tx_env.current_frame_index = None
 
     frame_gas_sum = Uint(0)
-    for frame in tx.frames:
+    for frame in frames:
         frame_gas_sum += frame.gas_limit
 
     gas_left = frame_gas_sum - total_gas_used

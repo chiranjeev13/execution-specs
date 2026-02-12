@@ -102,7 +102,11 @@ from .vm.gas import (
     calculate_excess_blob_gas,
     calculate_total_blob_gas,
 )
-from .vm.interpreter import MessageCallOutput, process_message_call
+from .vm.interpreter import (
+    MessageCallOutput,
+    process_abstract_call,
+    process_message_call,
+)
 
 BASE_FEE_MAX_CHANGE_DENOMINATOR = Uint(8)
 ELASTICITY_MULTIPLIER = Uint(2)
@@ -914,10 +918,7 @@ def apply_body(
     )
 
     for i, tx in enumerate(map(decode_transaction, transactions)):
-        if isinstance(tx, FrameTransaction):
-            process_frame_transaction(block_env, block_output, tx, Uint(i))
-        else:
-            process_transaction(block_env, block_output, tx, Uint(i))
+        process_transaction(block_env, block_output, tx, Uint(i))
 
     # EIP-7928: Increment block frame to post-execution index
     # After N transactions, block frame is at index N
@@ -1013,7 +1014,6 @@ def process_transaction(
         Index of the transaction in the block.
 
     """
-    # EIP-8141: Delegate to frame transaction processor
     if isinstance(tx, FrameTransaction):
         return process_frame_transaction(block_env, block_output, tx, index)
 
@@ -1213,7 +1213,7 @@ def process_frame_transaction(
     Process a frame transaction as defined in [EIP-8141].
 
     Frame execution itself is dispatched through
-    ``process_message_call(message)`` using a single top-level message for
+    ``process_abstract_call(message)`` using a single top-level message for
     the transaction.
 
     Parameters
@@ -1263,7 +1263,7 @@ def process_frame_transaction(
         tx=tx,
     )
 
-    if isinstance(tx, FrameTransaction) and len(tx.blob_versioned_hashes) > 0:
+    if len(tx.blob_versioned_hashes) > 0:
         blob_gas_fee = calculate_data_fee(block_env.excess_blob_gas, tx)
     else:
         blob_gas_fee = Uint(0)
@@ -1312,11 +1312,11 @@ def process_frame_transaction(
         disable_precompiles=False,
         parent_evm=None,
         is_create=False,
-        frame_tx=tx,
+        frames=tx.frames,
         state_changes=create_child_frame(tx_state_changes),
     )
 
-    tx_output = process_message_call(tx_message)
+    tx_output = process_abstract_call(tx_message)
 
     gas_refund = tx_output.gas_left
     gas_refund_amount = gas_refund * effective_gas_price

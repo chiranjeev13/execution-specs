@@ -26,7 +26,7 @@ from ..blocks import Log, Receipt, Withdrawal
 from ..fork_types import Address, Authorization, VersionedHash
 from ..state import State, TransientStorage
 from ..state_tracker import StateChanges, merge_on_failure, merge_on_success
-from ..transactions import FrameTransaction, LegacyTransaction
+from ..transactions import Frame, FrameTransaction, LegacyTransaction
 from ..trie import Trie
 
 __all__ = (
@@ -190,9 +190,9 @@ class Message:
     disable_precompiles: bool
     parent_evm: Optional["Evm"]
     is_create: bool
-    frame_tx: Optional[FrameTransaction] = None
+    frames: Optional[Tuple[Frame, ...]] = None
     """
-    The frame transaction payload for top-level frame transaction dispatch.
+    The frame list payload for top-level frame transaction dispatch.
     ``None`` for non-frame transactions and for inner calls executed within
     a frame transaction.
     """
