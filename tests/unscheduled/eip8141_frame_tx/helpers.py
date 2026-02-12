@@ -80,7 +80,7 @@ def make_frame_tx(
     sender: Any,
     frames: Sequence[Frame],
     chain_id: int = 1,
-    nonce: int = 0,
+    nonce: int = 1,
     max_fee_per_gas: int = 7,
     max_priority_fee_per_gas: int = 0,
     max_fee_per_blob_gas: int = 0,

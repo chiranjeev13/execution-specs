@@ -36,9 +36,9 @@ def test_frame_tx_with_blobs(
     fork: Fork,
 ) -> None:
     """Valid frame tx with blobs and TXPARAM blob fields."""
-    sender = pre.fund_eoa(amount=10**18)
-    pre.deploy_contract(
-        code=approve_bytecode(Spec.APPROVE_BOTH), address=sender
+    sender = pre.deploy_contract(
+        code=approve_bytecode(Spec.APPROVE_BOTH),
+        balance=10**18,
     )
 
     blob = Blob.from_fork(fork)
@@ -94,7 +94,7 @@ def test_frame_tx_with_blobs(
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
-                nonce=1,
+                nonce=2,
             ),
             txparam_target: Account(
                 storage={
@@ -112,10 +112,9 @@ def test_frame_tx_with_multiple_blobs(
     fork: Fork,
 ) -> None:
     """Frame tx with multiple blobs: count and max cost correct."""
-    sender = pre.fund_eoa(amount=10**18)
-    pre.deploy_contract(
+    sender = pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_BOTH),
-        address=sender,
+        balance=10**18,
     )
 
     blob_a = Blob.from_fork(fork)
@@ -173,7 +172,7 @@ def test_frame_tx_with_multiple_blobs(
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
-                nonce=1,
+                nonce=2,
             ),
             txparam_target: Account(
                 storage={
@@ -192,10 +191,9 @@ def test_blob_fee_below_base_fee_invalid(
     fork: Fork,
 ) -> None:
     """Reject tx when max_fee_per_blob_gas < blob base fee."""
-    sender = pre.fund_eoa(amount=10**18)
-    pre.deploy_contract(
+    sender = pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_BOTH),
-        address=sender,
+        balance=10**18,
     )
 
     blob = Blob.from_fork(fork)

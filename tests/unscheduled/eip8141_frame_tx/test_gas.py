@@ -34,9 +34,9 @@ SLOT_TLOAD = 0x03
 
 
 def _approve_sender(pre: Alloc):
-    sender = pre.fund_eoa(amount=10**18)
-    pre.deploy_contract(
-        code=approve_bytecode(Spec.APPROVE_BOTH), address=sender
+    sender = pre.deploy_contract(
+        code=approve_bytecode(Spec.APPROVE_BOTH),
+        balance=10**18,
     )
     return sender
 
@@ -80,7 +80,7 @@ def test_intrinsic_gas_boundary(
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
-                nonce=1,
+                nonce=2,
             ),
         },
     )
@@ -138,7 +138,7 @@ def test_frame_gas_isolation(
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
-                nonce=1,
+                nonce=2,
             ),
             frame2_target: Account(storage={SLOT_GAS_CHECK: 1}),
         },
@@ -208,7 +208,7 @@ def test_warm_storage_shared_across_frames(
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
-                nonce=1,
+                nonce=2,
             ),
             measure_target: Account(
                 storage={SLOT_WARM_COST: expected_cost, warm_slot: 1}
@@ -263,7 +263,7 @@ def test_transient_storage_reset_between_frames(
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
-                nonce=1,
+                nonce=2,
             ),
             tload_target: Account(storage={SLOT_TLOAD: 0}),
         },
@@ -282,9 +282,9 @@ def test_refund_credited_to_payer(
     execution (just STOP), most of the frame gas should be returned.
     """
     initial_balance = 10**18
-    sender = pre.fund_eoa(amount=initial_balance)
-    pre.deploy_contract(
-        code=approve_bytecode(Spec.APPROVE_BOTH), address=sender
+    sender = pre.deploy_contract(
+        code=approve_bytecode(Spec.APPROVE_BOTH),
+        balance=initial_balance,
     )
 
     # Deploy a target that does minimal work (just STOP)
@@ -338,7 +338,7 @@ def test_refund_credited_to_payer(
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
-                nonce=1,
+                nonce=2,
                 # Balance = initial - gas_used * effective_gas_price.
                 # With STOP-only targets the actual gas consumed is small,
                 # so sender keeps most of their balance.  The precise value
@@ -359,16 +359,13 @@ def test_refund_credited_to_sponsor(
 ) -> None:
     """Refund is credited to the sponsor (payer), not sender."""
     initial = 10**18
-    sender = pre.fund_eoa(amount=initial)
-    sponsor = pre.fund_eoa(amount=initial)
-
-    pre.deploy_contract(
+    sender = pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_EXECUTION),
-        address=sender,
+        balance=initial,
     )
-    pre.deploy_contract(
+    sponsor = pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_PAYMENT),
-        address=sponsor,
+        balance=initial,
     )
 
     target = pre.deploy_contract(code=Op.STOP)
@@ -411,13 +408,13 @@ def test_refund_credited_to_sponsor(
         tx=tx,
         post={
             # Sender balance unchanged (not the payer).
-            sender: Account(balance=initial, nonce=1),
+            sender: Account(balance=initial, nonce=2),
             # Sponsor paid gas; refund returns unused gas to
             # sponsor. Balance should be less than initial but
             # greater than (initial - full_cost) thanks to refund.
             sponsor: Account(
                 # sponsor pays gas (balance decreased)
-                nonce=0,
+                nonce=1,
             ),
         },
     )
@@ -504,10 +501,9 @@ def test_block_gas_pool_return(
     gas allocation but minimal work, second is a regular tx that
     needs the returned gas.
     """
-    sender = pre.fund_eoa(amount=10**18)
-    pre.deploy_contract(
+    sender = pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_BOTH),
-        address=sender,
+        balance=10**18,
     )
 
     target = pre.deploy_contract(

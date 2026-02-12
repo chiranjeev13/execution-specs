@@ -29,9 +29,9 @@ def test_receipt_payer_and_frame_receipts(
     topic: int,
 ) -> None:
     """Receipt includes payer and per-frame receipts with logs."""
-    sender = pre.fund_eoa(amount=10**18)
-    pre.deploy_contract(
-        code=approve_bytecode(Spec.APPROVE_BOTH), address=sender
+    sender = pre.deploy_contract(
+        code=approve_bytecode(Spec.APPROVE_BOTH),
+        balance=10**18,
     )
 
     log_data = Bytes(b"frame-log")
@@ -102,7 +102,7 @@ def test_receipt_payer_and_frame_receipts(
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
-                nonce=1,
+                nonce=2,
             ),
         },
     )
@@ -119,9 +119,9 @@ def test_frame_receipt_gas_used(
     a known-cost SSTORE. Asserts that gas_used is present and non-zero
     for each frame receipt.
     """
-    sender = pre.fund_eoa(amount=10**18)
-    pre.deploy_contract(
-        code=approve_bytecode(Spec.APPROVE_BOTH), address=sender
+    sender = pre.deploy_contract(
+        code=approve_bytecode(Spec.APPROVE_BOTH),
+        balance=10**18,
     )
 
     # SSTORE to a fresh slot costs a known amount; the exact value depends
@@ -181,7 +181,7 @@ def test_frame_receipt_gas_used(
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
-                nonce=1,
+                nonce=2,
             ),
             exec_target: Account(storage={0x42: 1}),
         },
@@ -193,14 +193,13 @@ def test_frame_receipt_binary_status_codes(
     pre: Alloc,
 ) -> None:
     """Frame receipts expose binary status codes (0/1)."""
-    sender = pre.fund_eoa(amount=10**18)
-    sponsor = pre.fund_eoa(amount=10**18)
-
-    pre.deploy_contract(
-        code=approve_bytecode(Spec.APPROVE_EXECUTION), address=sender
+    sender = pre.deploy_contract(
+        code=approve_bytecode(Spec.APPROVE_EXECUTION),
+        balance=10**18,
     )
-    pre.deploy_contract(
-        code=approve_bytecode(Spec.APPROVE_PAYMENT), address=sponsor
+    sponsor = pre.deploy_contract(
+        code=approve_bytecode(Spec.APPROVE_PAYMENT),
+        balance=10**18,
     )
 
     exec_target = pre.deploy_contract(code=Op.STOP)
@@ -250,7 +249,7 @@ def test_frame_receipt_binary_status_codes(
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_EXECUTION),
-                nonce=1,
+                nonce=2,
             ),
             sponsor: Account(
                 code=approve_bytecode(Spec.APPROVE_PAYMENT),
@@ -264,10 +263,9 @@ def test_frame_receipt_reverted_sender_frame(
     pre: Alloc,
 ) -> None:
     """Reverted SENDER frame: status=0, logs rolled back."""
-    sender = pre.fund_eoa(amount=10**18)
-    pre.deploy_contract(
+    sender = pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_BOTH),
-        address=sender,
+        balance=10**18,
     )
 
     log_and_revert = (
@@ -310,7 +308,7 @@ def test_frame_receipt_reverted_sender_frame(
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
-                nonce=1,
+                nonce=2,
             ),
         },
     )
@@ -321,10 +319,9 @@ def test_frame_receipt_oog_sender_frame(
     pre: Alloc,
 ) -> None:
     """OOG SENDER frame: status=0, gas_used == gas_limit."""
-    sender = pre.fund_eoa(amount=10**18)
-    pre.deploy_contract(
+    sender = pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_BOTH),
-        address=sender,
+        balance=10**18,
     )
 
     # Infinite loop burns all gas.
@@ -367,7 +364,7 @@ def test_frame_receipt_oog_sender_frame(
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
-                nonce=1,
+                nonce=2,
             ),
         },
     )

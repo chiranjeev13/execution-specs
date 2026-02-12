@@ -82,7 +82,7 @@ def test_invalid_frame_count(
     tx_error: TransactionException,
 ) -> None:
     """Reject frame transactions with invalid frame counts."""
-    sender = pre.fund_eoa()
+    sender = pre.deploy_contract(b"", balance=10**18)
     tx = make_frame_tx(sender=sender, frames=_dummy_frames(frame_count))
     tx.error = tx_error
     transaction_test(pre=pre, tx=tx)
@@ -96,7 +96,7 @@ def test_invalid_mode(
     mode: int,
 ) -> None:
     """Reject frame transactions with invalid modes."""
-    sender = pre.fund_eoa()
+    sender = pre.deploy_contract(b"", balance=10**18)
     frame = build_frame(
         mode=mode,
         target=Address(0x01),
@@ -123,7 +123,7 @@ def test_invalid_target_length(
     class FrameWithInvalidTarget(Frame):
         target: address_type  # type: ignore[assignment]
 
-    sender = pre.fund_eoa()
+    sender = pre.deploy_contract(b"", balance=10**18)
     frame = FrameWithInvalidTarget(
         mode=Spec.MODE_VERIFY,
         target=1,
@@ -189,7 +189,7 @@ def test_invalid_chain_id(
     tx_error: TransactionException,
 ) -> None:
     """Reject chain IDs above 2**256-1."""
-    sender = pre.fund_eoa()
+    sender = pre.deploy_contract(b"", balance=10**18)
     frame = build_frame(
         mode=Spec.MODE_VERIFY,
         target=sender,
@@ -217,7 +217,7 @@ def test_invalid_nonce(
     tx_error: TransactionException,
 ) -> None:
     """Reject nonces above 2**64-1."""
-    sender = pre.fund_eoa()
+    sender = pre.deploy_contract(b"", balance=10**18)
     frame = build_frame(
         mode=Spec.MODE_VERIFY,
         target=sender,
@@ -235,7 +235,7 @@ def test_invalid_blob_fields_empty_hashes_non_zero_fee(
     pre: Alloc,
 ) -> None:
     """Reject non-zero blob fee when no blob hashes are present."""
-    sender = pre.fund_eoa()
+    sender = pre.deploy_contract(b"", balance=10**18)
     frame = build_frame(
         mode=Spec.MODE_VERIFY,
         target=sender,
@@ -258,7 +258,7 @@ def test_invalid_blob_fields_hashes_zero_fee(
     pre: Alloc,
 ) -> None:
     """Reject zero blob fee when blob hashes are present."""
-    sender = pre.fund_eoa()
+    sender = pre.deploy_contract(b"", balance=10**18)
     frame = build_frame(
         mode=Spec.MODE_VERIFY,
         target=sender,
@@ -289,7 +289,7 @@ def test_invalid_rlp_encoding(
     invalid_rlp_mode: InvalidRLPMode,
 ) -> None:
     """Reject invalid RLP encodings for frame transactions."""
-    sender = pre.fund_eoa()
+    sender = pre.deploy_contract(b"", balance=10**18)
     frame = build_frame(
         mode=Spec.MODE_VERIFY,
         target=sender,
@@ -322,7 +322,7 @@ def test_invalid_rlp_missing_field(
             fields.pop(self.missing_index)
             return fields
 
-    sender = pre.fund_eoa()
+    sender = pre.deploy_contract(b"", balance=10**18)
     frame = build_frame(
         mode=Spec.MODE_VERIFY,
         target=sender,
@@ -355,7 +355,7 @@ def test_invalid_frame_not_list(
     class TransactionWithBytesFrames(Transaction):
         frames: Sequence[Bytes]  # type: ignore[assignment]
 
-    sender = pre.fund_eoa()
+    sender = pre.deploy_contract(b"", balance=10**18)
     frame = build_frame(
         mode=Spec.MODE_VERIFY,
         target=sender,
@@ -387,7 +387,7 @@ def test_invalid_frame_field_type(
     class FrameWithModeAsList(Frame):
         mode: List[HexNumber]  # type: ignore[assignment]
 
-    sender = pre.fund_eoa()
+    sender = pre.deploy_contract(b"", balance=10**18)
     frame = FrameWithModeAsList(
         mode=[HexNumber(0)],
         target=sender,
@@ -404,7 +404,7 @@ def test_max_frames_valid(
     pre: Alloc,
 ) -> None:
     """Frame transactions with MAX_FRAMES should be accepted."""
-    sender = pre.fund_eoa()
+    sender = pre.deploy_contract(b"", balance=10**18)
     tx = make_frame_tx(sender=sender, frames=_dummy_frames(Spec.MAX_FRAMES))
     transaction_test(pre=pre, tx=tx)
 
@@ -414,7 +414,7 @@ def test_valid_max_chain_id(
     pre: Alloc,
 ) -> None:
     """Accept chain_id == 2**256-1 (maximum valid value)."""
-    sender = pre.fund_eoa()
+    sender = pre.deploy_contract(b"", balance=10**18)
     frame = build_frame(
         mode=Spec.MODE_VERIFY,
         target=sender,
@@ -432,7 +432,7 @@ def test_valid_max_nonce(
     pre: Alloc,
 ) -> None:
     """Accept nonce == 2**64-1 (maximum valid value)."""
-    sender = pre.fund_eoa()
+    sender = pre.deploy_contract(b"", balance=10**18)
     frame = build_frame(
         mode=Spec.MODE_VERIFY,
         target=sender,
@@ -448,7 +448,7 @@ def test_valid_minimal_frame_tx(
     pre: Alloc,
 ) -> None:
     """Accept a minimal valid frame tx: 1 VERIFY + 1 SENDER frame."""
-    sender = pre.fund_eoa()
+    sender = pre.deploy_contract(b"", balance=10**18)
     frames = [
         build_frame(
             mode=Spec.MODE_VERIFY,
@@ -472,7 +472,7 @@ def test_null_target_valid(
     pre: Alloc,
 ) -> None:
     """Accept a frame with null target (interpreted as tx.sender)."""
-    sender = pre.fund_eoa()
+    sender = pre.deploy_contract(b"", balance=10**18)
     frame = build_frame(
         mode=Spec.MODE_VERIFY,
         target=None,
@@ -489,7 +489,7 @@ def test_frame_gas_limit_zero(
     pre: Alloc,
 ) -> None:
     """Accept a frame with gas_limit=0 (allowed per spec, will OOG)."""
-    sender = pre.fund_eoa()
+    sender = pre.deploy_contract(b"", balance=10**18)
     frame = build_frame(
         mode=Spec.MODE_VERIFY,
         target=sender,
@@ -510,7 +510,7 @@ def test_valid_modes(
     mode: int,
 ) -> None:
     """Accept frames with each valid mode value (0, 1, 2)."""
-    sender = pre.fund_eoa()
+    sender = pre.deploy_contract(b"", balance=10**18)
     frame = build_frame(
         mode=mode,
         target=sender,

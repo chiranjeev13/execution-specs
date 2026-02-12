@@ -69,9 +69,9 @@ def test_caller_origin_modes(
     expected_caller: Address | str,
 ) -> None:
     """Caller/origin semantics for DEFAULT and SENDER modes."""
-    sender = pre.fund_eoa(amount=10**18)
-    pre.deploy_contract(
-        code=approve_bytecode(Spec.APPROVE_BOTH), address=sender
+    sender = pre.deploy_contract(
+        code=approve_bytecode(Spec.APPROVE_BOTH),
+        balance=10**18,
     )
 
     expected_address = (
@@ -112,7 +112,7 @@ def test_caller_origin_modes(
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
-                nonce=1,
+                nonce=2,
             ),
             target: Account(storage={CALLER_SLOT: 1}),
         },
@@ -124,12 +124,11 @@ def test_caller_origin_verify_mode(
     pre: Alloc,
 ) -> None:
     """Caller/origin semantics for VERIFY mode (ENTRY_POINT)."""
-    sender = pre.fund_eoa(amount=10**18)
     sender_code = caller_origin_guard(
         Spec.ENTRY_POINT,
         approve_bytecode(Spec.APPROVE_BOTH),
     )
-    pre.deploy_contract(code=sender_code, address=sender)
+    sender = pre.deploy_contract(code=sender_code, balance=10**18)
 
     frames = [
         build_frame(
@@ -155,7 +154,7 @@ def test_caller_origin_verify_mode(
         env=Environment(),
         pre=pre,
         tx=tx,
-        post={sender: Account(code=sender_code, nonce=1)},
+        post={sender: Account(code=sender_code, nonce=2)},
     )
 
 
@@ -169,13 +168,12 @@ def test_null_target_calls_sender(
     mode: int,
 ) -> None:
     """Null target should call tx.sender in non-VERIFY modes."""
-    sender = pre.fund_eoa(amount=10**18)
     sender_code = Conditional(
         condition=Op.ISZERO(Op.CALLDATALOAD(0)),
         if_true=approve_bytecode(Spec.APPROVE_BOTH),
         if_false=Op.SSTORE(CALLER_SLOT, 1) + Op.STOP,
     )
-    pre.deploy_contract(code=sender_code, address=sender)
+    sender = pre.deploy_contract(code=sender_code, balance=10**18)
 
     frames = [
         build_frame(
@@ -205,7 +203,7 @@ def test_null_target_calls_sender(
         post={
             sender: Account(
                 code=sender_code,
-                nonce=1,
+                nonce=2,
                 storage={CALLER_SLOT: 1},
             ),
         },
@@ -218,8 +216,7 @@ def test_invalid_approve_scope(
     pre: Alloc,
 ) -> None:
     """APPROVE scope >= 3 should exceptional halt."""
-    sender = pre.fund_eoa(amount=10**18)
-    pre.deploy_contract(code=Op.APPROVE(0, 0, 3), address=sender)
+    sender = pre.deploy_contract(code=Op.APPROVE(0, 0, 3), balance=10**18)
 
     frames = [
         build_frame(
@@ -246,7 +243,7 @@ def test_invalid_approve_scope_zero_non_sender(
     pre: Alloc,
 ) -> None:
     """Scope=0 with non-sender target should invalidate the tx."""
-    sender = pre.fund_eoa(amount=10**18)
+    sender = pre.deploy_contract(code=Op.STOP, balance=10**18)
     other = pre.deploy_contract(code=approve_bytecode(Spec.APPROVE_EXECUTION))
 
     frames = [
@@ -268,10 +265,9 @@ def test_approve_return_data_and_call_status(
     pre: Alloc,
 ) -> None:
     """APPROVE should return data while CALL status remains binary."""
-    sender = pre.fund_eoa(amount=10**18)
-    pre.deploy_contract(
+    sender = pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_EXECUTION),
-        address=sender,
+        balance=10**18,
     )
 
     return_data = b"\x12\x34"
@@ -330,7 +326,7 @@ def test_approve_return_data_and_call_status(
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_EXECUTION),
-                nonce=1,
+                nonce=2,
             ),
             caller: Account(
                 storage={
@@ -380,9 +376,9 @@ def test_txparamload_fields(
     case: TxParamCase,
 ) -> None:
     """TXPARAMLOAD should expose static transaction fields."""
-    sender = pre.fund_eoa(amount=10**18)
-    pre.deploy_contract(
-        code=approve_bytecode(Spec.APPROVE_BOTH), address=sender
+    sender = pre.deploy_contract(
+        code=approve_bytecode(Spec.APPROVE_BOTH),
+        balance=10**18,
     )
 
     txparam_target = pre.deploy_contract(
@@ -448,7 +444,7 @@ def test_txparamload_fields(
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
-                nonce=1,
+                nonce=2,
             ),
             txparam_target: Account(storage={TXPARAM_SLOT: expected_value}),
         },
@@ -475,9 +471,9 @@ def test_txparam_data_access(
     expected_word: int,
 ) -> None:
     """TXPARAMSIZE/COPY should expose frame data (elided for VERIFY)."""
-    sender = pre.fund_eoa(amount=10**18)
-    pre.deploy_contract(
-        code=approve_bytecode(Spec.APPROVE_BOTH), address=sender
+    sender = pre.deploy_contract(
+        code=approve_bytecode(Spec.APPROVE_BOTH),
+        balance=10**18,
     )
 
     code = (
@@ -516,7 +512,7 @@ def test_txparam_data_access(
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
-                nonce=1,
+                nonce=2,
             ),
             target: Account(
                 storage={SIZE_SLOT: expected_size, DATA_SLOT: expected_word}
@@ -530,9 +526,9 @@ def test_txparam_status_previous_frames(
     pre: Alloc,
 ) -> None:
     """TXPARAMLOAD(0x15) returns status for previous frames."""
-    sender = pre.fund_eoa(amount=10**18)
-    pre.deploy_contract(
-        code=approve_bytecode(Spec.APPROVE_BOTH), address=sender
+    sender = pre.deploy_contract(
+        code=approve_bytecode(Spec.APPROVE_BOTH),
+        balance=10**18,
     )
 
     status_reader = pre.deploy_contract(
@@ -567,7 +563,7 @@ def test_txparam_status_previous_frames(
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
-                nonce=1,
+                nonce=2,
             ),
             status_reader: Account(storage={STATUS_SLOT: Spec.STATUS_SUCCESS}),
         },
@@ -579,9 +575,9 @@ def test_txparam_status_current_frame_invalid(
     pre: Alloc,
 ) -> None:
     """TXPARAMLOAD(0x15) on current frame should exceptional halt the frame."""
-    sender = pre.fund_eoa(amount=10**18)
-    pre.deploy_contract(
-        code=approve_bytecode(Spec.APPROVE_BOTH), address=sender
+    sender = pre.deploy_contract(
+        code=approve_bytecode(Spec.APPROVE_BOTH),
+        balance=10**18,
     )
 
     reader = pre.deploy_contract(
@@ -623,9 +619,9 @@ def test_txparam_invalid_selector(
     pre: Alloc,
 ) -> None:
     """Invalid TXPARAM selector should exceptional halt the frame."""
-    sender = pre.fund_eoa(amount=10**18)
-    pre.deploy_contract(
-        code=approve_bytecode(Spec.APPROVE_BOTH), address=sender
+    sender = pre.deploy_contract(
+        code=approve_bytecode(Spec.APPROVE_BOTH),
+        balance=10**18,
     )
 
     reader = pre.deploy_contract(
@@ -661,9 +657,9 @@ def test_txparam_out_of_bounds_frame_index(
     pre: Alloc,
 ) -> None:
     """Out-of-bounds frame index should exceptional halt the frame."""
-    sender = pre.fund_eoa(amount=10**18)
-    pre.deploy_contract(
-        code=approve_bytecode(Spec.APPROVE_BOTH), address=sender
+    sender = pre.deploy_contract(
+        code=approve_bytecode(Spec.APPROVE_BOTH),
+        balance=10**18,
     )
 
     reader = pre.deploy_contract(
@@ -699,9 +695,9 @@ def test_null_target_verify_mode(
     pre: Alloc,
 ) -> None:
     """Null target in VERIFY mode should call tx.sender."""
-    sender = pre.fund_eoa(amount=10**18)
-    pre.deploy_contract(
-        code=approve_bytecode(Spec.APPROVE_BOTH), address=sender
+    sender = pre.deploy_contract(
+        code=approve_bytecode(Spec.APPROVE_BOTH),
+        balance=10**18,
     )
 
     frames = [
@@ -739,7 +735,7 @@ def test_null_target_verify_mode(
         post={
             sender: Account(
                 code=approve_bytecode(Spec.APPROVE_BOTH),
-                nonce=1,
+                nonce=2,
             ),
         },
     )
@@ -750,10 +746,9 @@ def test_txparam_status_future_frame_invalid(
     pre: Alloc,
 ) -> None:
     """TXPARAMLOAD(0x15) on a future frame index halts the frame."""
-    sender = pre.fund_eoa(amount=10**18)
-    pre.deploy_contract(
+    sender = pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_BOTH),
-        address=sender,
+        balance=10**18,
     )
 
     # Frame index 2 is the last frame; reading status of
@@ -797,10 +792,9 @@ def test_approve_in_subcall_propagation(
     pre: Alloc,
 ) -> None:
     """APPROVE in nested CALL still yields CALL status 1 on success."""
-    sender = pre.fund_eoa(amount=10**18)
-    pre.deploy_contract(
+    sender = pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_EXECUTION),
-        address=sender,
+        balance=10**18,
     )
 
     inner = pre.deploy_contract(
@@ -864,10 +858,9 @@ def test_txparamcopy_out_of_bounds_offset(
     pre: Alloc,
 ) -> None:
     """TXPARAMCOPY with offset beyond data returns zero-padded."""
-    sender = pre.fund_eoa(amount=10**18)
-    pre.deploy_contract(
+    sender = pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_BOTH),
-        address=sender,
+        balance=10**18,
     )
 
     frame_data = b"hello"
@@ -914,10 +907,9 @@ def test_verify_data_elision_from_other_frame(
     pre: Alloc,
 ) -> None:
     """SENDER frame reading VERIFY frame data via TXPARAM sees 0."""
-    sender = pre.fund_eoa(amount=10**18)
-    pre.deploy_contract(
+    sender = pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_BOTH),
-        address=sender,
+        balance=10**18,
     )
 
     code = (
