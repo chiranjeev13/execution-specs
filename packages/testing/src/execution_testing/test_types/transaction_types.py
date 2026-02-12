@@ -190,9 +190,6 @@ class AuthorizationTuple(AuthorizationTupleGeneric[HexNumber]):
 class FrameGeneric(CamelModel, Generic[NumberBoundTypeVar], RLPSerializable):
     """EIP-8141 frame within a frame transaction."""
 
-    # Keep `rlp_override` out of frame model serialization.
-    rlp_override: ClassVar[Bytes | None] = None
-
     mode: NumberBoundTypeVar = Field(0)  # type: ignore
     target: Address | None = None
     gas_limit: NumberBoundTypeVar = Field(0)  # type: ignore
