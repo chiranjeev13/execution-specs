@@ -677,8 +677,45 @@ def validate_transaction(tx: Transaction) -> Tuple[Uint, Uint]:
     """
     from .vm.interpreter import MAX_INIT_CODE_SIZE
 
+    # TODO: need to weave this in correctly
     if isinstance(tx, FrameTransaction):
-        return validate_frame_transaction(tx)
+        # EIP-8141: Frame transaction static constraints
+        if len(tx.frames) == 0 or ulen(tx.frames) > MAX_FRAMES:
+            raise FrameTransactionInvalidFormatError(
+                "frame count must be > 0 and <= MAX_FRAMES"
+            )
+
+        if len(tx.sender) != 20:
+            raise FrameTransactionInvalidFormatError("sender must be 20 bytes")
+
+        for frame in tx.frames:
+            if frame.mode >= Uint(3):
+                raise FrameTransactionInvalidFormatError(
+                    "frame mode must be < 3"
+                )
+            if (
+                not isinstance(frame.target, Bytes0)
+                and len(frame.target) != 20
+            ):
+                raise FrameTransactionInvalidFormatError(
+                    "frame target must be 20 bytes or empty"
+                )
+
+        # Blob field constraints
+        if len(tx.blob_versioned_hashes) == 0 and tx.max_fee_per_blob_gas != 0:
+            raise FrameTransactionInvalidBlobFieldsError(
+                "max_fee_per_blob_gas must be 0 when no blob hashes"
+            )
+        if len(tx.blob_versioned_hashes) > 0 and tx.max_fee_per_blob_gas == 0:
+            raise FrameTransactionInvalidBlobFieldsError(
+                "max_fee_per_blob_gas must be > 0 when blob hashes present"
+            )
+
+        if U256(tx.nonce) >= U256(U64.MAX_VALUE):
+            raise NonceOverflowError("Nonce too high")
+
+        intrinsic_gas, _ = calculate_intrinsic_cost(tx)
+        return intrinsic_gas, Uint(0)
 
     intrinsic_gas, calldata_floor_gas_cost = calculate_intrinsic_cost(tx)
     if max(intrinsic_gas, calldata_floor_gas_cost) > tx.gas:
@@ -691,115 +728,6 @@ def validate_transaction(tx: Transaction) -> Tuple[Uint, Uint]:
         raise TransactionGasLimitExceededError("Gas limit too high")
 
     return intrinsic_gas, calldata_floor_gas_cost
-
-
-def validate_frame_transaction(
-    tx: FrameTransaction,
-) -> Tuple[Uint, Uint]:
-    """
-    Validate a frame transaction's static constraints as defined in
-    [EIP-8141].
-
-    Parameters
-    ----------
-    tx :
-        The frame transaction to validate.
-
-    Returns
-    -------
-    intrinsic_gas :
-        The intrinsic gas cost of the transaction.
-    calldata_floor_gas_cost :
-        Always ``Uint(0)`` for frame transactions (no EIP-7623 floor).
-
-    Raises
-    ------
-    FrameTransactionInvalidFormatError :
-        If any static constraint is violated.
-    FrameTransactionInvalidBlobFieldsError :
-        If blob field constraints are violated.
-    NonceOverflowError :
-        If the nonce exceeds ``2**64 - 1``.
-    InsufficientTransactionGasError :
-        If the gas limit is below the intrinsic cost.
-
-    [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
-    """
-    # Static constraints
-    if len(tx.frames) == 0 or ulen(tx.frames) > MAX_FRAMES:
-        raise FrameTransactionInvalidFormatError(
-            "frame count must be > 0 and <= MAX_FRAMES"
-        )
-
-    if len(tx.sender) != 20:
-        raise FrameTransactionInvalidFormatError("sender must be 20 bytes")
-
-    for frame in tx.frames:
-        if frame.mode >= Uint(3):
-            raise FrameTransactionInvalidFormatError(
-                "frame mode must be < 3"
-            )
-        if not isinstance(frame.target, Bytes0) and len(frame.target) != 20:
-            raise FrameTransactionInvalidFormatError(
-                "frame target must be 20 bytes or empty"
-            )
-
-    # Blob field constraints
-    if len(tx.blob_versioned_hashes) == 0 and tx.max_fee_per_blob_gas != 0:
-        raise FrameTransactionInvalidBlobFieldsError(
-            "max_fee_per_blob_gas must be 0 when no blob hashes"
-        )
-    if len(tx.blob_versioned_hashes) > 0 and tx.max_fee_per_blob_gas == 0:
-        raise FrameTransactionInvalidBlobFieldsError(
-            "max_fee_per_blob_gas must be > 0 when blob hashes present"
-        )
-
-    # Nonce check
-    if U256(tx.nonce) >= U256(U64.MAX_VALUE):
-        raise NonceOverflowError("Nonce too high")
-
-    # Calculate intrinsic gas
-    intrinsic_gas = calculate_frame_tx_intrinsic_cost(tx)
-
-    return intrinsic_gas, Uint(0)
-
-
-def calculate_frame_tx_intrinsic_cost(tx: FrameTransaction) -> Uint:
-    """
-    Calculate the intrinsic gas cost for a frame transaction.
-
-    ``intrinsic = FRAME_TX_INTRINSIC_COST + calldata_cost(rlp(frames))
-    + sum(frame.gas_limit)``
-
-    Parameters
-    ----------
-    tx :
-        The frame transaction.
-
-    Returns
-    -------
-    intrinsic_gas : `Uint`
-        The intrinsic gas cost.
-
-    [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
-    """
-    encoded_frames = rlp.encode(tx.frames)
-
-    zero_bytes = Uint(0)
-    for byte in encoded_frames:
-        if byte == 0:
-            zero_bytes += Uint(1)
-
-    non_zero_bytes = ulen(encoded_frames) - zero_bytes
-    # Standard calldata pricing: 4 gas per zero byte, 16 per non-zero byte
-    tokens_in_calldata = zero_bytes + non_zero_bytes * Uint(4)
-    calldata_cost = tokens_in_calldata * STANDARD_CALLDATA_TOKEN_COST
-
-    frame_gas_sum = Uint(0)
-    for frame in tx.frames:
-        frame_gas_sum += frame.gas_limit
-
-    return FRAME_TX_INTRINSIC_COST + calldata_cost + frame_gas_sum
 
 
 def calculate_intrinsic_cost(tx: Transaction) -> Tuple[Uint, Uint]:
@@ -816,12 +744,12 @@ def calculate_intrinsic_cost(tx: Transaction) -> Tuple[Uint, Uint]:
     for all operations to be implemented.
 
     The intrinsic cost includes:
-    1. Base cost (`TX_BASE_COST`)
+    1. Base cost (`TX_BASE_COST` or `FRAME_TX_INTRINSIC_COST`)
     2. Cost for data (zero and non-zero bytes)
     3. Cost for contract creation (if applicable)
     4. Cost for access list entries (if applicable)
     5. Cost for authorizations (if applicable)
-
+    6. Sum of per-frame gas limits (frame transactions only)
 
     This function takes a transaction as a parameter and returns the intrinsic
     gas cost of the transaction and the minimum gas cost used by the
@@ -830,8 +758,26 @@ def calculate_intrinsic_cost(tx: Transaction) -> Tuple[Uint, Uint]:
     from .vm.eoa_delegation import PER_EMPTY_ACCOUNT_COST
     from .vm.gas import init_code_cost
 
+    # TODO: need to weave this in correctly
     if isinstance(tx, FrameTransaction):
-        intrinsic = calculate_frame_tx_intrinsic_cost(tx)
+        # Frame transactions use rlp(frames) as calldata equivalent
+        encoded_frames = rlp.encode(tx.frames)
+
+        zero_bytes = Uint(0)
+        for byte in encoded_frames:
+            if byte == 0:
+                zero_bytes += Uint(1)
+
+        non_zero_bytes = ulen(encoded_frames) - zero_bytes
+        tokens_in_calldata = zero_bytes + non_zero_bytes * Uint(4)
+        calldata_cost = tokens_in_calldata * STANDARD_CALLDATA_TOKEN_COST
+
+        frame_gas_sum = Uint(0)
+        for frame in tx.frames:
+            frame_gas_sum += frame.gas_limit
+
+        intrinsic = FRAME_TX_INTRINSIC_COST + calldata_cost + frame_gas_sum
+        # No EIP-7623 floor for frame transactions
         return intrinsic, Uint(0)
 
     zero_bytes = 0
@@ -1129,6 +1075,7 @@ def signing_hash_8141(tx: FrameTransaction) -> Hash32:
         The signature hash.
 
     [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+
     """
     elided_frames: list = []
     for frame in tx.frames:

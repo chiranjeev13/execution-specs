@@ -482,24 +482,44 @@ def check_transaction(
         is empty.
 
     """
-    if isinstance(tx, FrameTransaction):
-        return check_frame_transaction(block_env, block_output, tx)
-
     gas_available = block_env.block_gas_limit - block_output.block_gas_used
     blob_gas_available = MAX_BLOB_GAS_PER_BLOCK - block_output.blob_gas_used
 
-    if tx.gas > gas_available:
-        raise GasUsedExceedsLimitError("gas used exceeds limit")
+    if isinstance(tx, FrameTransaction):
+        # Frame tx gas limit is the intrinsic gas (already validated)
+        intrinsic_gas, _ = validate_transaction(tx)
+        tx_gas_limit = intrinsic_gas
 
-    tx_blob_gas_used = calculate_total_blob_gas(tx)
-    if tx_blob_gas_used > blob_gas_available:
-        raise BlobGasLimitExceededError("blob gas limit exceeded")
+        if tx_gas_limit > gas_available:
+            raise GasUsedExceedsLimitError("gas used exceeds limit")
 
-    sender_address = recover_sender(block_env.chain_id, tx)
+        tx_blob_gas_used = calculate_total_blob_gas(tx)
+        if tx_blob_gas_used > blob_gas_available:
+            raise BlobGasLimitExceededError("blob gas limit exceeded")
+
+        # Sender is explicit in frame transactions (no signature)
+        sender_address = tx.sender
+    else:
+        if tx.gas > gas_available:
+            raise GasUsedExceedsLimitError("gas used exceeds limit")
+
+        tx_blob_gas_used = calculate_total_blob_gas(tx)
+        if tx_blob_gas_used > blob_gas_available:
+            raise BlobGasLimitExceededError("blob gas limit exceeded")
+
+        sender_address = recover_sender(block_env.chain_id, tx)
+
     sender_account = get_account(block_env.state, sender_address)
 
+    # Effective gas price calculation
     if isinstance(
-        tx, (FeeMarketTransaction, BlobTransaction, SetCodeTransaction)
+        tx,
+        (
+            FeeMarketTransaction,
+            BlobTransaction,
+            SetCodeTransaction,
+            FrameTransaction,
+        ),
     ):
         if tx.max_fee_per_gas < tx.max_priority_fee_per_gas:
             raise PriorityFeeGreaterThanMaxFeeError(
@@ -515,16 +535,24 @@ def check_transaction(
             tx.max_fee_per_gas - block_env.base_fee_per_gas,
         )
         effective_gas_price = priority_fee_per_gas + block_env.base_fee_per_gas
-        max_gas_fee = tx.gas * tx.max_fee_per_gas
+        if isinstance(tx, FrameTransaction):
+            max_gas_fee = Uint(0)  # no upfront balance check
+        else:
+            max_gas_fee = tx.gas * tx.max_fee_per_gas
     else:
         if tx.gas_price < block_env.base_fee_per_gas:
             raise InvalidBlock
         effective_gas_price = tx.gas_price
         max_gas_fee = tx.gas * tx.gas_price
 
-    if isinstance(tx, BlobTransaction):
+    # Blob validation (shared across blob tx and frame tx)
+    blob_versioned_hashes: Tuple[VersionedHash, ...] = ()
+    if (
+        isinstance(tx, (BlobTransaction, FrameTransaction))
+        and len(tx.blob_versioned_hashes) > 0
+    ):
         blob_count = len(tx.blob_versioned_hashes)
-        if blob_count == 0:
+        if isinstance(tx, BlobTransaction) and blob_count == 0:
             raise NoBlobDataError("no blob data in transaction")
         if blob_count > BLOB_COUNT_LIMIT:
             raise BlobCountExceededError(
@@ -542,12 +570,14 @@ def check_transaction(
                 "insufficient max fee per blob gas"
             )
 
-        max_gas_fee += Uint(calculate_total_blob_gas(tx)) * Uint(
-            tx.max_fee_per_blob_gas
-        )
+        if not isinstance(tx, FrameTransaction):
+            max_gas_fee += Uint(calculate_total_blob_gas(tx)) * Uint(
+                tx.max_fee_per_blob_gas
+            )
         blob_versioned_hashes = tx.blob_versioned_hashes
-    else:
-        blob_versioned_hashes = ()
+    elif isinstance(tx, BlobTransaction):
+        if len(tx.blob_versioned_hashes) == 0:
+            raise NoBlobDataError("no blob data in transaction")
 
     if isinstance(tx, (BlobTransaction, SetCodeTransaction)):
         if not isinstance(tx.to, Address):
@@ -557,111 +587,21 @@ def check_transaction(
         if not any(tx.authorizations):
             raise EmptyAuthorizationListError("empty authorization list")
 
+    # Nonce check (all transaction types)
     if sender_account.nonce > Uint(tx.nonce):
         raise NonceMismatchError("nonce too low")
     elif sender_account.nonce < Uint(tx.nonce):
         raise NonceMismatchError("nonce too high")
 
-    if Uint(sender_account.balance) < max_gas_fee + Uint(tx.value):
-        raise InsufficientBalanceError("insufficient sender balance")
-    if sender_account.code and not is_valid_delegation(sender_account.code):
-        raise InvalidSenderError("not EOA")
-
-    return (
-        sender_address,
-        effective_gas_price,
-        blob_versioned_hashes,
-        tx_blob_gas_used,
-    )
-
-
-def check_frame_transaction(
-    block_env: vm.BlockEnvironment,
-    block_output: vm.BlockOutput,
-    tx: FrameTransaction,
-) -> Tuple[Address, Uint, Tuple[VersionedHash, ...], U64]:
-    """
-    Check if a frame transaction is includable in the block.
-
-    Parameters
-    ----------
-    block_env :
-        The block scoped environment.
-    block_output :
-        The block output for the current block.
-    tx :
-        The frame transaction.
-
-    Returns
-    -------
-    sender_address :
-        The sender of the transaction.
-    effective_gas_price :
-        The effective gas price.
-    blob_versioned_hashes :
-        The blob versioned hashes.
-    tx_blob_gas_used :
-        The blob gas used.
-
-    """
-    intrinsic_gas, _ = validate_transaction(tx)
-    tx_gas_limit = intrinsic_gas
-
-    gas_available = block_env.block_gas_limit - block_output.block_gas_used
-    if tx_gas_limit > gas_available:
-        raise GasUsedExceedsLimitError("gas used exceeds limit")
-
-    tx_blob_gas_used = calculate_total_blob_gas(tx)
-    blob_gas_available = MAX_BLOB_GAS_PER_BLOCK - block_output.blob_gas_used
-    if tx_blob_gas_used > blob_gas_available:
-        raise BlobGasLimitExceededError("blob gas limit exceeded")
-
-    sender_address = tx.sender
-
-    if tx.max_fee_per_gas < tx.max_priority_fee_per_gas:
-        raise PriorityFeeGreaterThanMaxFeeError(
-            "priority fee greater than max fee"
-        )
-    if tx.max_fee_per_gas < block_env.base_fee_per_gas:
-        raise InsufficientMaxFeePerGasError(
-            tx.max_fee_per_gas, block_env.base_fee_per_gas
-        )
-
-    priority_fee_per_gas = min(
-        tx.max_priority_fee_per_gas,
-        tx.max_fee_per_gas - block_env.base_fee_per_gas,
-    )
-    effective_gas_price = priority_fee_per_gas + block_env.base_fee_per_gas
-
-    # Blob validation
-    blob_versioned_hashes: Tuple[VersionedHash, ...] = ()
-    if len(tx.blob_versioned_hashes) > 0:
-        blob_count = len(tx.blob_versioned_hashes)
-        if blob_count > BLOB_COUNT_LIMIT:
-            raise BlobCountExceededError(
-                f"Tx has {blob_count} blobs. Max: {BLOB_COUNT_LIMIT}"
-            )
-        for bvh in tx.blob_versioned_hashes:
-            if bvh[0:1] != VERSIONED_HASH_VERSION_KZG:
-                raise InvalidBlobVersionedHashError(
-                    "invalid blob versioned hash"
-                )
-        blob_gas_price = calculate_blob_gas_price(block_env.excess_blob_gas)
-        if Uint(tx.max_fee_per_blob_gas) < blob_gas_price:
-            raise InsufficientMaxFeePerBlobGasError(
-                "insufficient max fee per blob gas"
-            )
-        blob_versioned_hashes = tx.blob_versioned_hashes
-
-    # Nonce check
-    sender_account = get_account(block_env.state, sender_address)
-    if sender_account.nonce > Uint(tx.nonce):
-        raise NonceMismatchError("nonce too low")
-    elif sender_account.nonce < Uint(tx.nonce):
-        raise NonceMismatchError("nonce too high")
-
-    # No balance check at this point — payment comes from the payer
-    # No code check — smart accounts are the point
+    if not isinstance(tx, FrameTransaction):
+        # Balance and sender code checks (not applicable to frame tx —
+        # payment comes from the payer, smart accounts are the point)
+        if Uint(sender_account.balance) < max_gas_fee + Uint(tx.value):
+            raise InsufficientBalanceError("insufficient sender balance")
+        if sender_account.code and not is_valid_delegation(
+            sender_account.code
+        ):
+            raise InvalidSenderError("not EOA")
 
     return (
         sender_address,

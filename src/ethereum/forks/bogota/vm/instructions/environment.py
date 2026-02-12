@@ -23,7 +23,7 @@ from ...state import get_account
 from ...state_tracker import track_address
 from ...transactions import (
     FrameTransaction,
-    calculate_frame_tx_intrinsic_cost,
+    calculate_intrinsic_cost,
     signing_hash_8141,
 )
 from ...utils.address import to_address_masked
@@ -103,7 +103,7 @@ def _get_txparam_value(
         return (U256(tx.max_fee_per_blob_gas).to_be_bytes32(), Uint(32))
     elif selector == 0x06:
         # max cost
-        tx_gas_limit = calculate_frame_tx_intrinsic_cost(tx)
+        tx_gas_limit, _ = calculate_intrinsic_cost(tx)
         effective_gas_price = tx_env.gas_price
         blob_count = len(tx.blob_versioned_hashes)
         blob_gas_price = calculate_blob_gas_price(block_env.excess_blob_gas)
