@@ -265,23 +265,39 @@ def test_approve_return_data_and_call_status(
     state_test: StateTestFiller,
     pre: Alloc,
 ) -> None:
-    """APPROVE should return data while CALL status remains binary."""
+    """
+    EIP-8141 requires ``ADDRESS == resolved_target`` for every ``APPROVE``, and
+    ``APPROVE_PAYMENT`` collects fees from ``resolved_target``. Payment approval
+    therefore runs only on a ``VERIFY`` frame whose target is the paymaster
+    (see EIP example “Canonical Paymaster”), not inside a nested ``CALL`` from
+    another ``SENDER`` target.
+
+    Here the paymaster frame uses ``APPROVE_PAYMENT`` with output data; a later
+    ``SENDER`` frame uses ordinary ``CALL`` + ``RETURN`` to assert binary call
+    status and ``RETURNDATA`` handling.
+    """
     sender = pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_EXECUTION),
         balance=10**18,
     )
 
     return_data = b"\x12\x34"
-    approve_target = pre.deploy_contract(
-        code=approve_bytecode(Spec.APPROVE_PAYMENT, return_data)
+    paymaster = pre.deploy_contract(
+        code=approve_bytecode(Spec.APPROVE_PAYMENT, return_data),
+        balance=10**18,
     )
+    data_offset = 32 - len(return_data)
+    callee_code = Op.MSTORE(0, return_data) + Op.RETURN(
+        data_offset, len(return_data)
+    )
+    callee = pre.deploy_contract(code=callee_code)
 
     caller_code = (
         Op.SSTORE(
             STATUS_SLOT,
             Op.CALL(
                 gas=100_000,
-                address=approve_target,
+                address=callee,
                 value=0,
                 args_offset=0,
                 args_size=0,
@@ -301,6 +317,14 @@ def test_approve_return_data_and_call_status(
             target=sender,
             gas_limit=100_000,
             data=b"",
+            flags=Spec.APPROVE_EXECUTION,
+        ),
+        build_frame(
+            mode=Spec.MODE_VERIFY,
+            target=paymaster,
+            gas_limit=100_000,
+            data=b"",
+            flags=Spec.APPROVE_PAYMENT,
         ),
         build_frame(
             mode=Spec.MODE_SENDER,
@@ -835,22 +859,29 @@ def test_approve_in_subcall_propagation(
     state_test: StateTestFiller,
     pre: Alloc,
 ) -> None:
-    """APPROVE in nested CALL still yields CALL status 1 on success."""
+    """
+    ``APPROVE_PAYMENT`` cannot succeed inside a nested ``CALL`` when the active
+    frame's resolved target differs from ``ADDRESS`` (EIP-8141). Sponsorship uses
+    a dedicated ``VERIFY`` paymaster frame; the ``SENDER`` frame then performs an
+    ordinary nested ``CALL``, which must still report success (status 1).
+    """
     sender = pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_EXECUTION),
         balance=10**18,
     )
 
-    inner = pre.deploy_contract(
+    paymaster = pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_PAYMENT),
+        balance=10**18,
     )
+    call_target = pre.deploy_contract(code=Op.STOP)
 
     outer_code = (
         Op.SSTORE(
             STATUS_SLOT,
             Op.CALL(
                 gas=100_000,
-                address=inner,
+                address=call_target,
                 value=0,
                 args_offset=0,
                 args_size=0,
@@ -868,6 +899,14 @@ def test_approve_in_subcall_propagation(
             target=sender,
             gas_limit=100_000,
             data=b"",
+            flags=Spec.APPROVE_EXECUTION,
+        ),
+        build_frame(
+            mode=Spec.MODE_VERIFY,
+            target=paymaster,
+            gas_limit=100_000,
+            data=b"",
+            flags=Spec.APPROVE_PAYMENT,
         ),
         build_frame(
             mode=Spec.MODE_SENDER,

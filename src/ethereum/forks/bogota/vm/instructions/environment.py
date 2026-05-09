@@ -207,8 +207,8 @@ def frameparam(evm: Evm) -> None:
 
     [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
     """
-    frame_index = pop(evm.stack)
     fparam = pop(evm.stack)
+    frame_index = pop(evm.stack)
 
     charge_gas(evm, GAS_BASE)
 
