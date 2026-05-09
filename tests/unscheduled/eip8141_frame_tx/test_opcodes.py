@@ -217,7 +217,7 @@ def test_invalid_approve_scope(
     pre: Alloc,
 ) -> None:
     """APPROVE scope >= 3 should exceptional halt."""
-    sender = pre.deploy_contract(code=Op.APPROVE(0, 0, 3), balance=10**18)
+    sender = pre.deploy_contract(code=Op.APPROVE(0, 0, 4), balance=10**18)
 
     frames = [
         build_frame(
