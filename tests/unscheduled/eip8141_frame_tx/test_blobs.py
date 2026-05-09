@@ -46,8 +46,8 @@ def test_frame_tx_with_blobs(
 
     txparam_target = pre.deploy_contract(
         code=(
-            Op.SSTORE(BLOB_COUNT_SLOT, Op.TXPARAMLOAD(0x07, 0, 0))
-            + Op.SSTORE(MAX_COST_SLOT, Op.TXPARAMLOAD(0x06, 0, 0))
+            Op.SSTORE(BLOB_COUNT_SLOT, Op.TXPARAM(0x07))
+            + Op.SSTORE(MAX_COST_SLOT, Op.TXPARAM(0x06))
             + Op.STOP
         )
     )
@@ -123,8 +123,8 @@ def test_frame_tx_with_multiple_blobs(
 
     txparam_target = pre.deploy_contract(
         code=(
-            Op.SSTORE(BLOB_COUNT_SLOT, Op.TXPARAMLOAD(0x07, 0, 0))
-            + Op.SSTORE(MAX_COST_SLOT, Op.TXPARAMLOAD(0x06, 0, 0))
+            Op.SSTORE(BLOB_COUNT_SLOT, Op.TXPARAM(0x07))
+            + Op.SSTORE(MAX_COST_SLOT, Op.TXPARAM(0x06))
             + Op.STOP
         ),
     )

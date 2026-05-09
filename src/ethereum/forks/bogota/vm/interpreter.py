@@ -61,6 +61,7 @@ from ..state_tracker import (
     track_nonce_change,
 )
 from ..transactions import (
+    ATOMIC_BATCH_FLAG,
     ENTRY_POINT,
     FRAME_MODE_SENDER,
     FRAME_MODE_VERIFY,
@@ -189,9 +190,15 @@ def process_abstract_call(message: Message) -> MessageCallOutput:
     """
     Execute a frame transaction using a single top-level message.
 
-    The top-level frame message carries the frame payload in
-    ``message.frames``. Individual frames are then executed as regular
-    message calls.
+    Child ``Message`` fields come from the frame row: ``mode``, ``target``,
+    ``gas_limit``, ``data``, and for ``SENDER`` frames ``value`` + ``flags``
+    (``flags`` selects atomic SENDER batches per EIP-8141).
+
+    A transaction-level state snapshot is required so ``get_storage_original``
+    sees pre-transaction storage across frames (correct EIP-2200 / SSTORE
+    accounting), not an optional micro-optimization.
+
+    [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
     """
     frames = message.frames
     if frames is None:
@@ -223,83 +230,154 @@ def process_abstract_call(message: Message) -> MessageCallOutput:
     frame_logs: List[Tuple[Log, ...]] = []
     accounts_to_delete: Set[Address] = set()
 
-    try:
-        for frame_index, frame in enumerate(frames):
-            if isinstance(frame.target, Bytes0) or frame.target == Bytes0(b""):
-                target = frame_tx_sender
-            else:
-                target = Address(frame.target)
+    def run_single_frame(frame_index: int) -> MessageCallOutput:
+        frame = frames[frame_index]
+        if isinstance(frame.target, Bytes0) or frame.target == Bytes0(b""):
+            target = frame_tx_sender
+        else:
+            target = Address(frame.target)
 
-            if frame.mode == FRAME_MODE_SENDER:
-                if not tx_approval.sender_approved:
-                    raise FrameTransactionInvalidApprovalError(
-                        "SENDER mode before execution approval"
-                    )
-                caller = frame_tx_sender
-            else:
-                caller = ENTRY_POINT
+        if frame.mode == FRAME_MODE_SENDER:
+            if not tx_approval.sender_approved:
+                raise FrameTransactionInvalidApprovalError(
+                    "SENDER mode before execution approval"
+                )
+            caller = frame_tx_sender
+        else:
+            caller = ENTRY_POINT
 
-            tx_env.origin = caller
-            tx_env.gas = frame.gas_limit
-            tx_env.transient_storage = TransientStorage()
-            tx_env.current_frame_index = frame_index
+        tx_env.origin = caller
+        tx_env.gas = frame.gas_limit
+        tx_env.transient_storage = TransientStorage()
+        tx_env.current_frame_index = frame_index
 
-            tx_env.accessed_addresses.add(target)
-            tx_env.accessed_addresses.add(caller)
-            tx_env.accessed_addresses.add(frame_tx_sender)
+        tx_env.accessed_addresses.add(target)
+        tx_env.accessed_addresses.add(caller)
+        tx_env.accessed_addresses.add(frame_tx_sender)
 
-            code = get_account(message.block_env.state, target).code
+        call_value = frame.value if frame.mode == FRAME_MODE_SENDER else U256(
+            0)
+        should_transfer = frame.mode == FRAME_MODE_SENDER and Uint(
+            call_value
+        ) > Uint(0)
 
-            call_frame = create_child_frame(tx_env.state_changes)
-            frame_message = Message(
-                block_env=message.block_env,
-                tx_env=tx_env,
-                caller=caller,
-                target=target,
-                current_target=target,
-                gas=frame.gas_limit,
-                value=U256(0),
-                data=frame.data,
-                code_address=target,
-                code=code,
-                depth=Uint(0),
-                should_transfer_value=False,
-                is_static=frame.mode == FRAME_MODE_VERIFY,
-                disable_precompiles=False,
-                parent_evm=None,
-                is_create=False,
-                state_changes=call_frame,
+        code = get_account(message.block_env.state, target).code
+
+        call_frame = create_child_frame(tx_env.state_changes)
+        frame_message = Message(
+            block_env=message.block_env,
+            tx_env=tx_env,
+            caller=caller,
+            target=target,
+            current_target=target,
+            gas=frame.gas_limit,
+            value=call_value,
+            data=frame.data,
+            code_address=target,
+            code=code,
+            depth=Uint(0),
+            should_transfer_value=should_transfer,
+            is_static=frame.mode == FRAME_MODE_VERIFY,
+            disable_precompiles=False,
+            parent_evm=None,
+            is_create=False,
+            state_changes=call_frame,
+        )
+
+        sender_approved_before = tx_approval.sender_approved
+        payer_approved_before = tx_approval.payer_approved
+        payer_address_before = tx_approval.payer_address
+
+        tx_approval.approve_called_in_frame = False
+        frame_output = process_message_call(frame_message)
+        accounts_to_delete.update(frame_output.accounts_to_delete)
+
+        if frame_output.error is not None:
+            tx_approval.sender_approved = sender_approved_before
+            tx_approval.payer_approved = payer_approved_before
+            tx_approval.payer_address = payer_address_before
+            tx_approval.approve_called_in_frame = False
+
+        if frame.mode == FRAME_MODE_VERIFY and not tx_approval.approve_called_in_frame:
+            raise FrameTransactionInvalidFrameExecutionError(
+                "VERIFY frame must successfully call APPROVE"
             )
 
-            sender_approved_before = tx_approval.sender_approved
-            payer_approved_before = tx_approval.payer_approved
-            payer_address_before = tx_approval.payer_address
+        return frame_output
 
-            tx_approval.approve_called_in_frame = False
-            frame_output = process_message_call(frame_message)
-            accounts_to_delete.update(frame_output.accounts_to_delete)
-
-            if frame_output.error is not None:
-                tx_approval.sender_approved = sender_approved_before
-                tx_approval.payer_approved = payer_approved_before
-                tx_approval.payer_address = payer_address_before
-                tx_approval.approve_called_in_frame = False
-
-            frame_gas_used = frame.gas_limit - frame_output.gas_left
-            total_gas_used += frame_gas_used
-
-            frame_status = 1 if frame_output.error is None else 0
-
-            if (
-                frame.mode == FRAME_MODE_VERIFY
-                and not tx_approval.approve_called_in_frame
-            ):
-                raise FrameTransactionInvalidFrameExecutionError(
-                    "VERIFY frame must successfully call APPROVE"
+    try:
+        i = 0
+        n = len(frames)
+        while i < n:
+            frame = frames[i]
+            if frame.mode != FRAME_MODE_SENDER:
+                frame_output = run_single_frame(i)
+                frame_gas_used = frame.gas_limit - frame_output.gas_left
+                total_gas_used += frame_gas_used
+                frame_status = 1 if frame_output.error is None else 0
+                frame_statuses.append(frame_status)
+                frame_logs.append(
+                    frame_output.logs if frame_status == 1 else ()
                 )
+                i += 1
+                continue
 
-            frame_statuses.append(frame_status)
-            frame_logs.append(frame_output.logs if frame_status == 1 else ())
+            batch_indices: List[int] = []
+            j = i
+            while j < n and frames[j].mode == FRAME_MODE_SENDER:
+                batch_indices.append(j)
+                if not (int(frames[j].flags) & int(ATOMIC_BATCH_FLAG)):
+                    j += 1
+                    break
+                j += 1
+            i = j
+
+            if len(batch_indices) == 1:
+                idx = batch_indices[0]
+                frame_output = run_single_frame(idx)
+                frame_gas_used = frames[idx].gas_limit - frame_output.gas_left
+                total_gas_used += frame_gas_used
+                frame_status = 1 if frame_output.error is None else 0
+                frame_statuses.append(frame_status)
+                frame_logs.append(
+                    frame_output.logs if frame_status == 1 else ()
+                )
+                continue
+
+            approval_snap = (
+                tx_approval.sender_approved,
+                tx_approval.payer_approved,
+                tx_approval.payer_address,
+            )
+            batch_transient = TransientStorage()
+            begin_transaction(state, batch_transient)
+            batch_outputs: List[MessageCallOutput] = []
+            abort_batch = False
+            for idx in batch_indices:
+                out = run_single_frame(idx)
+                batch_outputs.append(out)
+                if out.error is not None:
+                    abort_batch = True
+                    break
+
+            if abort_batch:
+                rollback_transaction(state, batch_transient)
+                tx_approval.sender_approved = approval_snap[0]
+                tx_approval.payer_approved = approval_snap[1]
+                tx_approval.payer_address = approval_snap[2]
+                for out2, idx2 in zip(batch_outputs, batch_indices[: len(batch_outputs)]):
+                    total_gas_used += frames[idx2].gas_limit - out2.gas_left
+                for _ in batch_indices:
+                    frame_statuses.append(0)
+                    frame_logs.append(())
+                continue # don't revert the entire transaction
+
+            commit_transaction(state, batch_transient)
+            for out, idx in zip(batch_outputs, batch_indices):
+                total_gas_used += frames[idx].gas_limit - out.gas_left
+                frame_status = 1 if out.error is None else 0
+                frame_statuses.append(frame_status)
+                frame_logs.append(out.logs if frame_status == 1 else ())
 
         if not tx_approval.payer_approved:
             raise FrameTransactionInvalidFrameExecutionError(

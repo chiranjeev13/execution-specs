@@ -134,18 +134,27 @@ class TransactionLoad:
         frames = []
         for frame_data in self.raw.get("frames", []):
             mode = parse_hex_or_int(frame_data.get("mode"), Uint)
+            flags = parse_hex_or_int(frame_data.get("flags", "0x0"), Uint)
             target_raw = frame_data.get("target")
             if target_raw is None or target_raw == "" or target_raw == "0x":
                 target = Bytes0(b"")
             else:
                 target = self.fork.hex_to_address(target_raw)
             gas_limit = parse_hex_or_int(frame_data.get("gasLimit"), Uint)
+            value_raw = frame_data.get("value", "0x0")
+            value = (
+                hex_to_u256(value_raw)
+                if isinstance(value_raw, str)
+                else U256(int(value_raw))
+            )
             data = hex_to_bytes(frame_data.get("data", "0x"))
             frames.append(
                 self.fork.Frame(
                     mode=mode,
+                    flags=flags,
                     target=target,
                     gas_limit=gas_limit,
+                    value=value,
                     data=data,
                 )
             )

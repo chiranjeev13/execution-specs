@@ -192,15 +192,26 @@ class FrameGeneric(CamelModel, Generic[NumberBoundTypeVar], RLPSerializable):
     """EIP-8141 frame within a frame transaction."""
 
     mode: NumberBoundTypeVar = Field(0)  # type: ignore
+    flags: NumberBoundTypeVar = Field(0)  # type: ignore
     target: Address | None = None
     gas_limit: NumberBoundTypeVar = Field(0)  # type: ignore
+    value: NumberBoundTypeVar = Field(0)  # type: ignore
     data: Bytes = Field(Bytes(b""))
 
-    rlp_fields: ClassVar[List[str]] = ["mode", "target", "gas_limit", "data"]
-    rlp_signing_fields: ClassVar[List[str]] = [
+    rlp_fields: ClassVar[List[str]] = [
         "mode",
+        "flags",
         "target",
         "gas_limit",
+        "value",
+        "data",
+    ]
+    rlp_signing_fields: ClassVar[List[str]] = [
+        "mode",
+        "flags",
+        "target",
+        "gas_limit",
+        "value",
         "data",
     ]
 
@@ -208,8 +219,10 @@ class FrameGeneric(CamelModel, Generic[NumberBoundTypeVar], RLPSerializable):
         """Return frame fields as a list for RLP encoding."""
         return [
             to_serializable_element(self.mode),
+            to_serializable_element(self.flags),
             bytes(self.target) if self.target is not None else b"",
             to_serializable_element(self.gas_limit),
+            to_serializable_element(self.value),
             bytes(self.data) if not signing else b"",
         ]
 

@@ -204,9 +204,10 @@ class Ops(enum.Enum):
 
     # Frame Transaction Opcodes (EIP-8141)
     APPROVE = 0xAA
-    TXPARAMLOAD = 0xB0
-    TXPARAMSIZE = 0xB1
-    TXPARAMCOPY = 0xB2
+    TXPARAM = 0xB0
+    FRAMEDATALOAD = 0xB1
+    FRAMEDATACOPY = 0xB2
+    FRAMEPARAM = 0xB3
 
     # System Operations
     CREATE = 0xF0
@@ -362,9 +363,10 @@ op_implementation: Dict[Ops, Callable] = {
     Ops.LOG3: log_instructions.log3,
     Ops.LOG4: log_instructions.log4,
     Ops.APPROVE: system_instructions.approve,
-    Ops.TXPARAMLOAD: environment_instructions.txparamload,
-    Ops.TXPARAMSIZE: environment_instructions.txparamsize,
-    Ops.TXPARAMCOPY: environment_instructions.txparamcopy,
+    Ops.TXPARAM: environment_instructions.txparam,
+    Ops.FRAMEDATALOAD: environment_instructions.framedataload,
+    Ops.FRAMEDATACOPY: environment_instructions.framedatacopy,
+    Ops.FRAMEPARAM: environment_instructions.frameparam,
     Ops.CREATE: system_instructions.create,
     Ops.RETURN: system_instructions.return_,
     Ops.CALL: system_instructions.call,

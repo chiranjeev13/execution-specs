@@ -27,6 +27,7 @@ from .exceptions import (
     TransactionGasLimitExceededError,
     TransactionTypeError,
 )
+
 from .fork_types import Address, Authorization, VersionedHash
 
 TX_BASE_COST = Uint(21000)
@@ -90,9 +91,73 @@ and ``VERIFY`` mode frames.
 [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
 """
 
-MAX_FRAMES = Uint(1000)
+MAX_FRAMES = Uint(64)
 """
 Maximum number of frames allowed in a frame transaction.
+
+[EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+"""
+
+FRAME_TX_PER_FRAME_COST = Uint(475)
+"""
+Per-frame overhead charged in the frame transaction gas limit, as defined
+in [EIP-8141].
+
+[EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+"""
+
+APPROVE_SCOPE_NONE = Uint(0x00)
+"""
+No approval scope. VERIFY frames with this scope in flags are invalid,
+and passing this value to ``APPROVE`` causes an exceptional halt.
+
+[EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+"""
+
+APPROVE_PAYMENT = Uint(0x01)
+"""
+Approval scope bit 0: the contract approves paying the total gas cost
+for the transaction. Requires ``sender_approved`` to be set first.
+
+[EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+"""
+
+APPROVE_EXECUTION = Uint(0x02)
+"""
+Approval scope bit 1: the sender contract approves future ``SENDER`` mode
+frames calling on its behalf. Only valid when ``ADDRESS == tx.sender``.
+
+[EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+"""
+
+APPROVE_PAYMENT_AND_EXECUTION = Uint(0x03)
+"""
+Approval scope bits 0+1: combines ``APPROVE_PAYMENT`` and
+``APPROVE_EXECUTION``. Processed atomically within a single ``APPROVE``.
+
+[EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+"""
+
+APPROVE_SCOPE_MASK = Uint(0x03)
+"""
+Bitmask for extracting the approval scope from ``frame.flags`` (bits 0--1).
+
+[EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+"""
+
+ATOMIC_BATCH_FLAG = Uint(0x04)
+"""
+Bit 2 of ``frame.flags``. When set on consecutive ``SENDER`` frames, they
+form an atomic batch — if any frame in the batch reverts, all preceding
+frames in the batch are also reverted and remaining frames are skipped.
+
+[EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+"""
+
+FRAME_GAS_LIMIT_MAX = Uint(2**63 - 1)
+"""
+Maximum ``gas_limit`` for a single frame and maximum sum of per-frame gas
+limits, per [EIP-8141].
 
 [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
 """
@@ -137,12 +202,19 @@ class Frame:
     A single execution frame within a frame transaction, as defined in
     [EIP-8141].
 
+    RLP order is ``[mode, flags, target, gas_limit, value, data]``.
+
     [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
     """
 
     mode: Uint
     """
     The execution mode: 0 = DEFAULT, 1 = VERIFY, 2 = SENDER.
+    """
+
+    flags: Uint
+    """
+    Frame flags (approval scope bits 0--1, atomic batch bit 2, reserved 3--7).
     """
 
     target: Address | Bytes0
@@ -154,6 +226,12 @@ class Frame:
     gas_limit: Uint
     """
     Gas allocated to this frame.
+    """
+
+    value: U256
+    """
+    Native value (wei) for the top-level call. Non-zero only in ``SENDER``
+    mode.
     """
 
     data: Bytes
@@ -720,10 +798,21 @@ def validate_transaction(tx: Transaction) -> Tuple[Uint, Uint]:
         if len(tx.sender) != 20:
             raise FrameTransactionInvalidFormatError("sender must be 20 bytes")
 
-        for frame in tx.frames:
+        total_frame_gas = Uint(0)
+        for i, frame in enumerate(tx.frames):
             if frame.mode >= NUM_FRAME_MODES:
                 raise FrameTransactionInvalidFormatError(
                     "frame mode must be < 3"
+                )
+            if Uint(frame.flags) >= Uint(8):
+                raise FrameTransactionInvalidFormatError(
+                    "frame flags reserved bits must be zero"
+                )
+            if frame.mode == FRAME_MODE_VERIFY and (
+                Uint(frame.flags) & APPROVE_SCOPE_MASK == Uint(0)
+            ):
+                raise FrameTransactionInvalidFormatError(
+                    "VERIFY frames must allow a non-zero APPROVE scope in flags"
                 )
             if (
                 not isinstance(frame.target, Bytes0)
@@ -732,6 +821,33 @@ def validate_transaction(tx: Transaction) -> Tuple[Uint, Uint]:
                 raise FrameTransactionInvalidFormatError(
                     "frame target must be 20 bytes or empty"
                 )
+            if Uint(frame.gas_limit) > FRAME_GAS_LIMIT_MAX:
+                raise FrameTransactionInvalidFormatError(
+                    "frame gas_limit exceeds protocol maximum"
+                )
+            total_frame_gas += Uint(frame.gas_limit)
+            if total_frame_gas > FRAME_GAS_LIMIT_MAX:
+                raise FrameTransactionInvalidFormatError(
+                    "sum of frame gas_limit exceeds protocol maximum"
+                )
+            if frame.mode != FRAME_MODE_SENDER and Uint(frame.value) != Uint(0):
+                raise FrameTransactionInvalidFormatError(
+                    "non-zero frame value only allowed in SENDER mode"
+                )
+            # Atomic batch flag: only with SENDER; must have another SENDER next
+            if Uint(frame.flags) & ATOMIC_BATCH_FLAG != Uint(0):
+                if frame.mode != FRAME_MODE_SENDER:
+                    raise FrameTransactionInvalidFormatError(
+                        "atomic batch flag valid only in SENDER mode"
+                    )
+                if i + 1 >= len(tx.frames):
+                    raise FrameTransactionInvalidFormatError(
+                        "atomic batch flag cannot be set on last frame"
+                    )
+                if tx.frames[i + 1].mode != FRAME_MODE_SENDER:
+                    raise FrameTransactionInvalidFormatError(
+                        "atomic batch requires following frame to be SENDER"
+                    )
 
         # Blob field constraints
         if len(tx.blob_versioned_hashes) == 0 and tx.max_fee_per_blob_gas != 0:
@@ -808,7 +924,13 @@ def calculate_intrinsic_cost(tx: Transaction) -> Tuple[Uint, Uint]:
         for frame in tx.frames:
             frame_gas_sum += frame.gas_limit
 
-        intrinsic = FRAME_TX_INTRINSIC_COST + calldata_cost + frame_gas_sum
+        per_frame_overhead = Uint(len(tx.frames)) * FRAME_TX_PER_FRAME_COST
+        intrinsic = (
+            FRAME_TX_INTRINSIC_COST
+            + per_frame_overhead
+            + calldata_cost
+            + frame_gas_sum
+        )
         # No EIP-7623 floor for frame transactions
         return intrinsic, Uint(0)
 
@@ -1115,8 +1237,10 @@ def signing_hash_8141(tx: FrameTransaction) -> Hash32:
             elided_frames.append(
                 Frame(
                     mode=frame.mode,
+                    flags=frame.flags,
                     target=frame.target,
                     gas_limit=frame.gas_limit,
+                    value=frame.value,
                     data=Bytes(b""),
                 )
             )

@@ -22,6 +22,7 @@ from ...fork_types import EMPTY_ACCOUNT
 from ...state import get_account
 from ...state_tracker import track_address
 from ...transactions import (
+    APPROVE_SCOPE_MASK,
     FRAME_MODE_VERIFY,
     FrameTransaction,
     calculate_intrinsic_cost,
@@ -57,7 +58,10 @@ class InvalidTxParamSelector(ExceptionalHalt):
 
 
 class TxParamOutOfBounds(ExceptionalHalt):
-    """Raised when TXPARAM* frame index is out of bounds."""
+    """Raised when a frame index argument is out of bounds."""
+
+class InvalidFrameParam(ExceptionalHalt):
+    """Raised when ``FRAMEPARAM`` is called with an invalid parameter id."""
 
 
 def _get_frame_tx(evm: Evm) -> FrameTransaction:
@@ -68,120 +72,215 @@ def _get_frame_tx(evm: Evm) -> FrameTransaction:
     return tx
 
 
-def _get_txparam_value(
-    evm: Evm,
-    selector: int,
-    index: int,
-) -> tuple:
+def _txparam_word(evm: Evm, param: int) -> bytes:
     """
-    Get the value and size for a TXPARAM selector.
+    Return the 32-byte word for ``TXPARAM`` as defined in [EIP-8141].
 
-    Returns (value_bytes, size) where value_bytes is the raw bytes of the
-    parameter value.
+    Only selectors ``0x00`` … ``0x0A`` are valid.
+
+    [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
     """
     tx = _get_frame_tx(evm)
     tx_env = evm.message.tx_env
     block_env = evm.message.block_env
 
-    if selector == 0x00:
-        # Transaction type
-        return (U256(0x06).to_be_bytes32(), Uint(32))
-    elif selector == 0x01:
-        # Nonce
-        return (U256(tx.nonce).to_be_bytes32(), Uint(32))
-    elif selector == 0x02:
-        # Sender (left-padded to 32 bytes)
-        padded = b"\x00" * 12 + bytes(tx.sender)
-        return (padded, Uint(32))
-    elif selector == 0x03:
-        # max_priority_fee_per_gas
-        return (U256(tx.max_priority_fee_per_gas).to_be_bytes32(), Uint(32))
-    elif selector == 0x04:
-        # max_fee_per_gas
-        return (U256(tx.max_fee_per_gas).to_be_bytes32(), Uint(32))
-    elif selector == 0x05:
-        # max_fee_per_blob_gas
-        return (U256(tx.max_fee_per_blob_gas).to_be_bytes32(), Uint(32))
-    elif selector == 0x06:
-        # max cost
+    if param == 0x00:
+        return U256(0x06).to_be_bytes32()
+    elif param == 0x01:
+        return U256(tx.nonce).to_be_bytes32()
+    elif param == 0x02:
+        return b"\x00" * 12 + bytes(tx.sender)
+    elif param == 0x03:
+        return U256(tx.max_priority_fee_per_gas).to_be_bytes32()
+    elif param == 0x04:
+        return U256(tx.max_fee_per_gas).to_be_bytes32()
+    elif param == 0x05:
+        return U256(tx.max_fee_per_blob_gas).to_be_bytes32()
+    elif param == 0x06:
         tx_gas_limit, _ = calculate_intrinsic_cost(tx)
         effective_gas_price = tx_env.gas_price
         blob_count = len(tx.blob_versioned_hashes)
         blob_gas_price = calculate_blob_gas_price(block_env.excess_blob_gas)
-        blob_fees = (
-            Uint(blob_count) * Uint(GAS_PER_BLOB) * Uint(blob_gas_price)
-        )
-        max_cost_val = (
-            Uint(tx_gas_limit) * Uint(effective_gas_price) + blob_fees
-        )
-        return (U256(max_cost_val).to_be_bytes32(), Uint(32))
-    elif selector == 0x07:
-        # len(blob_versioned_hashes)
-        return (
-            U256(len(tx.blob_versioned_hashes)).to_be_bytes32(),
-            Uint(32),
-        )
-    elif selector == 0x08:
-        # compute_sig_hash(tx)
-        sig_hash = signing_hash_8141(tx)
-        return (bytes(sig_hash), Uint(32))
-    elif selector == 0x09:
-        # len(frames)
-        return (U256(len(tx.frames)).to_be_bytes32(), Uint(32))
-    elif selector == 0x10:
-        # current frame index
+        blob_fees = Uint(blob_count) * Uint(GAS_PER_BLOB) * Uint(blob_gas_price)
+        max_cost_val = Uint(tx_gas_limit) * Uint(effective_gas_price) + blob_fees
+        return U256(max_cost_val).to_be_bytes32()
+    elif param == 0x07:
+        return U256(len(tx.blob_versioned_hashes)).to_be_bytes32()
+    elif param == 0x08:
+        return bytes(signing_hash_8141(tx))
+    elif param == 0x09:
+        return U256(len(tx.frames)).to_be_bytes32()
+    elif param == 0x0A:
         frame_idx = tx_env.current_frame_index
         if frame_idx is None:
             raise FrameTxNotActiveError
-        return (U256(frame_idx).to_be_bytes32(), Uint(32))
-    elif selector == 0x11:
-        # frame[index].target
-        if index >= len(tx.frames):
-            raise TxParamOutOfBounds
-        frame = tx.frames[index]
-
-        if isinstance(frame.target, Bytes0) or frame.target == Bytes0(b""):
-            padded = b"\x00" * 32
-        else:
-            padded = b"\x00" * 12 + bytes(frame.target)
-        return (padded, Uint(32))
-    elif selector == 0x12:
-        # frame[index].data (elided for VERIFY)
-        if index >= len(tx.frames):
-            raise TxParamOutOfBounds
-        frame = tx.frames[index]
-        if frame.mode == FRAME_MODE_VERIFY:
-            return (b"", Uint(0))
-        data = bytes(frame.data)
-        return (data, Uint(len(data)))
-    elif selector == 0x13:
-        # frame[index].gas_limit
-        if index >= len(tx.frames):
-            raise TxParamOutOfBounds
-        return (
-            U256(tx.frames[index].gas_limit).to_be_bytes32(),
-            Uint(32),
-        )
-    elif selector == 0x14:
-        # frame[index].mode
-        if index >= len(tx.frames):
-            raise TxParamOutOfBounds
-        return (U256(tx.frames[index].mode).to_be_bytes32(), Uint(32))
-    elif selector == 0x15:
-        # frame[index].status (0=failure, 1=success; only for past frames)
-        if index >= len(tx.frames):
-            raise TxParamOutOfBounds
-        frame_idx = tx_env.current_frame_index
-        if frame_idx is None:
-            raise FrameTxNotActiveError
-        if index >= frame_idx:
-            raise TxParamOutOfBounds  # current/future → exceptional halt
-        statuses = tx_env.frame_statuses
-        if statuses is None or index >= len(statuses):
-            raise TxParamOutOfBounds
-        return (U256(statuses[index]).to_be_bytes32(), Uint(32))
+        return U256(frame_idx).to_be_bytes32()
     else:
         raise InvalidTxParamSelector
+
+
+def _frame_bytes_at_index(tx: FrameTransaction, index: int) -> bytes:
+    """Return ``frame.data`` bytes (empty when the frame is ``VERIFY``)."""
+    if index >= len(tx.frames):
+        raise TxParamOutOfBounds
+    frame = tx.frames[index]
+    if frame.mode == FRAME_MODE_VERIFY:
+        return b""
+    return bytes(frame.data)
+
+
+def _frameparam_word(evm: Evm, param: int, frame_index: int) -> bytes:
+    """
+    Return the 32-byte word for ``FRAMEPARAM`` as defined in [EIP-8141].
+
+    [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+    """
+    tx = _get_frame_tx(evm)
+    tx_env = evm.message.tx_env
+
+    if frame_index >= len(tx.frames):
+        raise TxParamOutOfBounds
+
+    frame = tx.frames[frame_index]
+
+    if param == 0x00:
+        if isinstance(frame.target, Bytes0) or frame.target == Bytes0(b""):
+            return b"\x00" * 32
+        return b"\x00" * 12 + bytes(frame.target)
+    elif param == 0x01:
+        return U256(frame.gas_limit).to_be_bytes32()
+    elif param == 0x02:
+        return U256(frame.mode).to_be_bytes32()
+    elif param == 0x03:
+        return U256(frame.flags).to_be_bytes32()
+    elif param == 0x04:
+        data_b = _frame_bytes_at_index(tx, frame_index)
+        return U256(len(data_b)).to_be_bytes32()
+    elif param == 0x05:
+        cur = tx_env.current_frame_index
+        if cur is None:
+            raise FrameTxNotActiveError
+        if frame_index >= cur:
+            raise TxParamOutOfBounds
+        statuses = tx_env.frame_statuses
+        if statuses is None or frame_index >= len(statuses):
+            raise TxParamOutOfBounds
+        return U256(statuses[frame_index]).to_be_bytes32()
+    elif param == 0x06:
+        allowed = Uint(frame.flags) & APPROVE_SCOPE_MASK
+        return U256(allowed).to_be_bytes32()
+    elif param == 0x07:
+        batch = (Uint(frame.flags) >> Uint(2)) & Uint(1)
+        return U256(batch).to_be_bytes32()
+    elif param == 0x08:
+        return frame.value.to_be_bytes32()
+    else:
+        raise InvalidFrameParam
+
+
+def txparam(evm: Evm) -> None:
+    """
+    ``TXPARAM`` opcode (``0xB0``).
+
+    Transaction-scoped parameters per [EIP-8141].
+
+    Stack: ``param`` → ``word``
+
+    [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+    """
+    param = pop(evm.stack)
+
+    charge_gas(evm, GAS_BASE)
+
+    word = _txparam_word(evm, int(param))
+    push(evm.stack, U256.from_be_bytes(word))
+
+    evm.pc += Uint(1)
+
+
+def frameparam(evm: Evm) -> None:
+    """
+    ``FRAMEPARAM`` opcode (``0xB3``).
+
+    Per-frame parameters per [EIP-8141]. Stack top first: ``frameIndex``,
+    then ``param``.
+
+    [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+    """
+    frame_index = pop(evm.stack)
+    fparam = pop(evm.stack)
+
+    charge_gas(evm, GAS_BASE)
+
+    word = _frameparam_word(evm, int(fparam), int(frame_index))
+    push(evm.stack, U256.from_be_bytes(word))
+
+    evm.pc += Uint(1)
+
+
+def framedataload(evm: Evm) -> None:
+    """
+    ``FRAMEDATALOAD`` opcode (``0xB1``).
+
+    Stack top first: ``offset``, ``frameIndex``.
+
+    [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+    """
+    offset = pop(evm.stack)
+    frame_index = pop(evm.stack)
+
+    charge_gas(evm, GAS_VERY_LOW)
+
+    tx = _get_frame_tx(evm)
+    data_b = _frame_bytes_at_index(tx, int(frame_index))
+    off = int(offset)
+    result = bytearray(32)
+    for i in range(32):
+        idx = off + i
+        if idx < len(data_b):
+            result[i] = data_b[idx]
+
+    push(evm.stack, U256.from_be_bytes(bytes(result)))
+
+    evm.pc += Uint(1)
+
+
+def framedatacopy(evm: Evm) -> None:
+    """
+    ``FRAMEDATACOPY`` opcode (``0xB2``).
+
+    Stack top first: ``frameIndex``, ``length``, ``dataOffset``, ``memOffset``.
+
+    [EIP-8141]: https://eips.ethereum.org/EIPS/eip-8141
+    """
+    mem_offset = pop(evm.stack)     # top - 0 = memOffset
+    data_offset = pop(evm.stack)    # top - 1 = dataOffset
+    length = pop(evm.stack)         # top - 2 = length
+    frame_index = pop(evm.stack)        # top - 3 = frameIndex
+
+    tx = _get_frame_tx(evm)
+    data_b = _frame_bytes_at_index(tx, int(frame_index))
+
+    words = ceil32(Uint(length)) // Uint(32)
+    extend_memory = calculate_gas_extend_memory(
+        evm.memory, [(mem_offset, length)]
+    )
+    copy_gas_cost = GAS_COPY * words
+    charge_gas(evm, GAS_VERY_LOW + copy_gas_cost + extend_memory.cost)
+
+    evm.memory += b"\x00" * extend_memory.expand_by
+
+    src_off = int(data_offset)
+    copy_len = int(length)
+    result = bytearray(copy_len)
+    for i in range(copy_len):
+        idx = src_off + i
+        if idx < len(data_b):
+            result[i] = data_b[idx]
+
+    memory_write(evm.memory, mem_offset, Bytes(bytes(result)))
+
+    evm.pc += Uint(1)
 
 
 def address(evm: Evm) -> None:
@@ -754,128 +853,6 @@ def blob_base_fee(evm: Evm) -> None:
         evm.message.block_env.excess_blob_gas
     )
     push(evm.stack, U256(blob_base_fee))
-
-    # PROGRAM COUNTER
-    evm.pc += Uint(1)
-
-
-def txparamload(evm: Evm) -> None:
-    """
-    ``TXPARAMLOAD`` opcode (``0xB0``).
-
-    Load a 32-byte word from a transaction parameter and push it onto
-    the stack.
-
-    Stack: [selector, index, offset] → [value]
-
-    Parameters
-    ----------
-    evm :
-        The current EVM frame.
-
-    """
-    # STACK
-    selector = pop(evm.stack)
-    index = pop(evm.stack)
-    offset = pop(evm.stack)
-
-    # GAS
-    charge_gas(evm, GAS_VERY_LOW)
-
-    # OPERATION
-    value_bytes, _ = _get_txparam_value(evm, int(selector), int(index))
-
-    # Read 32 bytes starting at offset, zero-padding beyond bounds
-    off = int(offset)
-    result = bytearray(32)
-    for i in range(32):
-        idx = off + i
-        if idx < len(value_bytes):
-            result[i] = value_bytes[idx]
-        # else: remains 0 (zero-padded)
-
-    push(evm.stack, U256.from_be_bytes(bytes(result)))
-
-    # PROGRAM COUNTER
-    evm.pc += Uint(1)
-
-
-def txparamsize(evm: Evm) -> None:
-    """
-    ``TXPARAMSIZE`` opcode (``0xB1``).
-
-    Push the size of a transaction parameter onto the stack.
-
-    Stack: [in1, in2] → [size]
-
-    Parameters
-    ----------
-    evm :
-        The current EVM frame.
-
-    """
-    # STACK
-    in1 = pop(evm.stack)
-    in2 = pop(evm.stack)
-
-    # GAS
-    charge_gas(evm, GAS_BASE)
-
-    # OPERATION
-    _, size = _get_txparam_value(evm, int(in1), int(in2))
-
-    push(evm.stack, U256(size))
-
-    # PROGRAM COUNTER
-    evm.pc += Uint(1)
-
-
-def txparamcopy(evm: Evm) -> None:
-    """
-    ``TXPARAMCOPY`` opcode (``0xB2``).
-
-    Copy transaction parameter data to memory.
-
-    Stack: [in1, in2, dest_offset, src_offset, length] → []
-
-    Parameters
-    ----------
-    evm :
-        The current EVM frame.
-
-    """
-    # STACK
-    in1 = pop(evm.stack)
-    in2 = pop(evm.stack)
-    dest_offset = pop(evm.stack)
-    src_offset = pop(evm.stack)
-    length = pop(evm.stack)
-
-    # GAS
-    extend_memory = calculate_gas_extend_memory(
-        evm.memory, [(dest_offset, length)]
-    )
-    words = Uint(length + U256(31)) // Uint(32)
-    copy_gas = GAS_VERY_LOW + GAS_VERY_LOW * words
-    charge_gas(evm, copy_gas + extend_memory.cost)
-
-    # Extend memory
-    evm.memory += b"\x00" * extend_memory.expand_by
-
-    # OPERATION
-    value_bytes, _ = _get_txparam_value(evm, int(in1), int(in2))
-
-    # Extract the requested slice, zero-padding beyond bounds
-    src_off = int(src_offset)
-    copy_len = int(length)
-    result = bytearray(copy_len)
-    for i in range(copy_len):
-        idx = src_off + i
-        if idx < len(value_bytes):
-            result[i] = value_bytes[idx]
-        # else: remains 0 (zero-padded)
-
-    memory_write(evm.memory, dest_offset, Bytes(bytes(result)))
 
     # PROGRAM COUNTER
     evm.pc += Uint(1)

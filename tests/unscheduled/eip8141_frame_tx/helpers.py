@@ -51,7 +51,10 @@ def frame_tx_gas_summary(
     encoded_frames = rlp_frames(frames)
     cd_gas = calldata_cost(encoded_frames)
     fg_sum = sum(int(frame.gas_limit) for frame in frames)
-    intrinsic = Spec.FRAME_TX_INTRINSIC_COST + cd_gas + fg_sum
+    per_frame = len(frames) * Spec.FRAME_TX_PER_FRAME_COST
+    intrinsic = (
+        Spec.FRAME_TX_INTRINSIC_COST + per_frame + cd_gas + fg_sum
+    )
     return FrameGasSummary(
         intrinsic_gas=intrinsic,
         calldata_gas=cd_gas,
@@ -65,12 +68,23 @@ def build_frame(
     target: Address | None,
     gas_limit: int,
     data: Bytes | bytes = b"",
+    flags: int | None = None,
+    value: int = 0,
 ) -> Frame:
     """Construct a frame with the given parameters."""
+    if flags is None:
+        # VERIFY must advertise a non-zero allowed APPROVE scope (EIP-8141).
+        flags = (
+            Spec.APPROVE_PAYMENT | Spec.APPROVE_EXECUTION
+            if mode == Spec.MODE_VERIFY
+            else 0
+        )
     return Frame(
         mode=mode,
+        flags=flags,
         target=target,
         gas_limit=gas_limit,
+        value=value,
         data=Bytes(data),
     )
 
@@ -127,24 +141,20 @@ def approve_bytecode(
 
     # frame_target = tx.frames[current_frame_index].target, with null target
     # resolved to tx.sender.
-    current_frame_index = Op.TXPARAMLOAD(0x10, 0, 0)
-    frame_target_raw = Op.TXPARAMLOAD(0x11, current_frame_index, 0)
+    current_frame_index = Op.TXPARAM(0x0A)
+    frame_target_raw = Op.FRAMEPARAM(0x00, current_frame_index)
     frame_target_resolved = Op.OR(
         frame_target_raw,
         Op.MUL(
             Op.ISZERO(frame_target_raw),
-            Op.TXPARAMLOAD(0x02, 0, 0),
+            Op.TXPARAM(0x02),
         ),
     )
 
-    # If CALLER already equals frame target, execute APPROVE directly.
-    # Otherwise trampoline through a self-CALL so the nested context has
-    # CALLER == current contract address.
+    # ``ADDRESS == resolved_target`` (EIP-8141); use self-CALL if needed so the
+    # inner execution has ``ADDRESS`` equal to the frame target contract.
     return Conditional(
-        condition=Op.OR(
-            Op.EQ(Op.CALLER, frame_target_resolved),
-            Op.EQ(Op.CALLER, Op.ADDRESS),
-        ),
+        condition=Op.EQ(Op.ADDRESS, frame_target_resolved),
         if_true=direct_approve,
         if_false=(
             Op.CALL(
@@ -194,7 +204,7 @@ def max_cost(
     blob_base_fee: int = 0,
     gas_per_blob: int = 0,
 ) -> int:
-    """Compute max cost for TXPARAMLOAD(0x06)."""
+    """Compute max cost for ``TXPARAM(0x06)``."""
     price = effective_gas_price(
         base_fee=base_fee,
         max_fee=max_fee,

@@ -1,13 +1,14 @@
 """Tests opcode semantics for EIP-8141 frame transactions."""
 
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
 import pytest
 from execution_testing import (
     Account,
     Address,
     Alloc,
+    Bytecode,
     Conditional,
     Environment,
     FrameReceipt,
@@ -340,52 +341,79 @@ def test_approve_return_data_and_call_status(
 
 @dataclass(frozen=True)
 class TxParamCase:
-    """Test case for TXPARAMLOAD selectors."""
+    """Test case for ``TXPARAM`` or ``FRAMEPARAM``."""
 
-    selector: int
-    index: int
-    expected: Callable
+    expected: Callable[[Any], int]
     id: str
+    txparam: int | None = None
+    frameparam: tuple[int, int] | None = None
+
+
+def txparam_case_opcode(case: TxParamCase) -> Bytecode:
+    """Bytecode that pushes the word under test onto the stack."""
+    if case.txparam is not None and case.frameparam is not None:
+        raise ValueError("TxParamCase must set only one of txparam or frameparam")
+    if case.txparam is not None:
+        return Op.TXPARAM(case.txparam)
+    if case.frameparam is not None:
+        fp, fi = case.frameparam
+        return Op.FRAMEPARAM(param=fp, frame_index=fi)
+    raise ValueError("TxParamCase requires txparam or frameparam")
 
 
 @pytest.mark.parametrize(
     "case",
     [
-        TxParamCase(0x00, 0, lambda _: Spec.FRAME_TX_TYPE, "tx_type"),
-        TxParamCase(0x01, 0, lambda ctx: ctx.nonce, "nonce"),
-        TxParamCase(0x02, 0, lambda ctx: ctx.sender_int, "sender"),
-        TxParamCase(0x03, 0, lambda ctx: ctx.max_priority_fee, "max_priority"),
-        TxParamCase(0x04, 0, lambda ctx: ctx.max_fee, "max_fee"),
-        TxParamCase(0x05, 0, lambda ctx: ctx.max_blob_fee, "max_blob_fee"),
-        TxParamCase(0x06, 0, lambda ctx: ctx.max_cost, "max_cost"),
-        TxParamCase(0x07, 0, lambda _: 0, "blob_count"),
-        TxParamCase(0x08, 0, lambda ctx: ctx.sig_hash, "sig_hash"),
-        TxParamCase(0x09, 0, lambda ctx: ctx.frame_count, "frame_count"),
-        TxParamCase(0x10, 0, lambda ctx: ctx.current_index, "current_index"),
-        TxParamCase(0x11, 1, lambda ctx: ctx.frame_target_int, "frame_target"),
+        TxParamCase(txparam=0x00, expected=lambda _: Spec.FRAME_TX_TYPE, id="tx_type"),
+        TxParamCase(txparam=0x01, expected=lambda ctx: ctx.nonce, id="nonce"),
+        TxParamCase(txparam=0x02, expected=lambda ctx: ctx.sender_int, id="sender"),
         TxParamCase(
-            0x13, 1, lambda ctx: ctx.frame_gas_limit, "frame_gas_limit"
+            txparam=0x03, expected=lambda ctx: ctx.max_priority_fee, id="max_priority"
         ),
-        TxParamCase(0x14, 1, lambda ctx: ctx.frame_mode, "frame_mode"),
+        TxParamCase(txparam=0x04, expected=lambda ctx: ctx.max_fee, id="max_fee"),
+        TxParamCase(
+            txparam=0x05, expected=lambda ctx: ctx.max_blob_fee, id="max_blob_fee"
+        ),
+        TxParamCase(txparam=0x06, expected=lambda ctx: ctx.max_cost, id="max_cost"),
+        TxParamCase(txparam=0x07, expected=lambda _: 0, id="blob_count"),
+        TxParamCase(txparam=0x08, expected=lambda ctx: ctx.sig_hash, id="sig_hash"),
+        TxParamCase(
+            txparam=0x09, expected=lambda ctx: ctx.frame_count, id="frame_count"
+        ),
+        TxParamCase(
+            txparam=0x0A, expected=lambda ctx: ctx.current_index, id="current_index"
+        ),
+        TxParamCase(
+            frameparam=(0x00, 1),
+            expected=lambda ctx: ctx.frame_target_int,
+            id="frame_target",
+        ),
+        TxParamCase(
+            frameparam=(0x01, 1),
+            expected=lambda ctx: ctx.frame_gas_limit,
+            id="frame_gas_limit",
+        ),
+        TxParamCase(
+            frameparam=(0x02, 1),
+            expected=lambda ctx: ctx.frame_mode,
+            id="frame_mode",
+        ),
     ],
     ids=lambda case: case.id,
 )
-def test_txparamload_fields(
+def test_txparam_fields(
     state_test: StateTestFiller,
     pre: Alloc,
     case: TxParamCase,
 ) -> None:
-    """TXPARAMLOAD should expose static transaction fields."""
+    """``TXPARAM`` / ``FRAMEPARAM`` expose static transaction and frame fields."""
     sender = pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_BOTH),
         balance=10**18,
     )
 
     txparam_target = pre.deploy_contract(
-        code=Op.SSTORE(
-            TXPARAM_SLOT, Op.TXPARAMLOAD(case.selector, case.index, 0)
-        )
-        + Op.STOP
+        code=Op.SSTORE(TXPARAM_SLOT, txparam_case_opcode(case)) + Op.STOP
     )
 
     frames = [
@@ -470,15 +498,17 @@ def test_txparam_data_access(
     expected_size: int,
     expected_word: int,
 ) -> None:
-    """TXPARAMSIZE/COPY should expose frame data (elided for VERIFY)."""
+    """``FRAMEPARAM`` data length and ``FRAMEDATACOPY`` expose frame data."""
     sender = pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_BOTH),
         balance=10**18,
     )
 
     code = (
-        Op.SSTORE(SIZE_SLOT, Op.TXPARAMSIZE(0x12, frame_index))
-        + Op.TXPARAMCOPY(0x12, frame_index, 0, 0, 32)
+        Op.SSTORE(SIZE_SLOT, Op.FRAMEPARAM(param=0x04, frame_index=frame_index))
+        + Op.FRAMEDATACOPY(
+            mem_offset=0, data_offset=0, length=32, frame_index=frame_index
+        )
         + Op.SSTORE(DATA_SLOT, Op.MLOAD(0))
         + Op.STOP
     )
@@ -525,14 +555,17 @@ def test_txparam_status_previous_frames(
     state_test: StateTestFiller,
     pre: Alloc,
 ) -> None:
-    """TXPARAMLOAD(0x15) returns status for previous frames."""
+    """``FRAMEPARAM(0x05)`` returns status for previous frames."""
     sender = pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_BOTH),
         balance=10**18,
     )
 
     status_reader = pre.deploy_contract(
-        code=Op.SSTORE(STATUS_SLOT, Op.TXPARAMLOAD(0x15, 0, 0)) + Op.STOP
+        code=Op.SSTORE(
+            STATUS_SLOT, Op.FRAMEPARAM(param=0x05, frame_index=0)
+        )
+        + Op.STOP
     )
 
     frames = [
@@ -574,14 +607,17 @@ def test_txparam_status_current_frame_invalid(
     state_test: StateTestFiller,
     pre: Alloc,
 ) -> None:
-    """TXPARAMLOAD(0x15) on current frame should exceptional halt the frame."""
+    """``FRAMEPARAM(0x05)`` on the current frame exceptional-halts."""
     sender = pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_BOTH),
         balance=10**18,
     )
 
     reader = pre.deploy_contract(
-        code=Op.SSTORE(STATUS_SLOT, Op.TXPARAMLOAD(0x15, 1, 0)) + Op.STOP
+        code=Op.SSTORE(
+            STATUS_SLOT, Op.FRAMEPARAM(param=0x05, frame_index=1)
+        )
+        + Op.STOP
     )
 
     frames = [
@@ -625,7 +661,7 @@ def test_txparam_invalid_selector(
     )
 
     reader = pre.deploy_contract(
-        code=Op.SSTORE(TXPARAM_SLOT, Op.TXPARAMLOAD(0x16, 0, 0)) + Op.STOP
+        code=Op.SSTORE(TXPARAM_SLOT, Op.TXPARAM(0x0B)) + Op.STOP
     )
 
     frames = [
@@ -663,7 +699,10 @@ def test_txparam_out_of_bounds_frame_index(
     )
 
     reader = pre.deploy_contract(
-        code=Op.SSTORE(TXPARAM_SLOT, Op.TXPARAMLOAD(0x11, 5, 0)) + Op.STOP
+        code=Op.SSTORE(
+            TXPARAM_SLOT, Op.FRAMEPARAM(param=0x00, frame_index=5)
+        )
+        + Op.STOP
     )
 
     frames = [
@@ -745,7 +784,7 @@ def test_txparam_status_future_frame_invalid(
     state_test: StateTestFiller,
     pre: Alloc,
 ) -> None:
-    """TXPARAMLOAD(0x15) on a future frame index halts the frame."""
+    """``FRAMEPARAM(0x05)`` on a future frame index halts the frame."""
     sender = pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_BOTH),
         balance=10**18,
@@ -754,7 +793,12 @@ def test_txparam_status_future_frame_invalid(
     # Frame index 2 is the last frame; reading status of
     # index 2 from index 1 is a future frame.
     reader = pre.deploy_contract(
-        code=(Op.SSTORE(STATUS_SLOT, Op.TXPARAMLOAD(0x15, 2, 0)) + Op.STOP),
+        code=(
+            Op.SSTORE(
+                STATUS_SLOT, Op.FRAMEPARAM(param=0x05, frame_index=2)
+            )
+            + Op.STOP
+        ),
     )
 
     frames = [
@@ -857,7 +901,7 @@ def test_txparamcopy_out_of_bounds_offset(
     state_test: StateTestFiller,
     pre: Alloc,
 ) -> None:
-    """TXPARAMCOPY with offset beyond data returns zero-padded."""
+    """``FRAMEDATACOPY`` with offset beyond data returns zero-padded."""
     sender = pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_BOTH),
         balance=10**18,
@@ -865,7 +909,9 @@ def test_txparamcopy_out_of_bounds_offset(
 
     frame_data = b"hello"
     code = (
-        Op.TXPARAMCOPY(0x12, 1, 0, 100, 32)
+        Op.FRAMEDATACOPY(
+            mem_offset=0, data_offset=100, length=32, frame_index=1
+        )
         + Op.SSTORE(DATA_SLOT, Op.MLOAD(0))
         + Op.STOP
     )
@@ -906,15 +952,17 @@ def test_verify_data_elision_from_other_frame(
     state_test: StateTestFiller,
     pre: Alloc,
 ) -> None:
-    """SENDER frame reading VERIFY frame data via TXPARAM sees 0."""
+    """SENDER frame reading VERIFY frame data sees length 0 and zero bytes."""
     sender = pre.deploy_contract(
         code=approve_bytecode(Spec.APPROVE_BOTH),
         balance=10**18,
     )
 
     code = (
-        Op.SSTORE(SIZE_SLOT, Op.TXPARAMSIZE(0x12, 0))
-        + Op.TXPARAMCOPY(0x12, 0, 0, 0, 32)
+        Op.SSTORE(SIZE_SLOT, Op.FRAMEPARAM(param=0x04, frame_index=0))
+        + Op.FRAMEDATACOPY(
+            mem_offset=0, data_offset=0, length=32, frame_index=0
+        )
         + Op.SSTORE(DATA_SLOT, Op.MLOAD(0))
         + Op.STOP
     )

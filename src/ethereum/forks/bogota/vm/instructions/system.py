@@ -33,7 +33,14 @@ from ...state_tracker import (
     track_balance_change,
     track_nonce_change,
 )
-from ...transactions import FrameTransaction
+from ...transactions import (
+    APPROVE_EXECUTION,
+    APPROVE_PAYMENT,
+    APPROVE_PAYMENT_AND_EXECUTION,
+    APPROVE_SCOPE_MASK,
+    APPROVE_SCOPE_NONE,
+    FrameTransaction,
+)
 from ...utils.address import (
     compute_contract_address,
     compute_create2_contract_address,
@@ -112,6 +119,16 @@ def _get_current_frame_target(evm: Evm, tx: FrameTransaction):
     if isinstance(frame.target, Bytes0) or frame.target == Bytes0(b""):
         return tx.sender
     return frame.target
+
+
+def _get_current_frame_struct(evm: Evm, tx: FrameTransaction):
+    """Return the ``Frame`` tuple for the executing frame index."""
+    frame_idx = evm.message.tx_env.current_frame_index
+    if frame_idx is None:
+        raise FrameTxNotActiveError
+    if frame_idx >= len(tx.frames):
+        raise FrameTxNotActiveError
+    return tx.frames[frame_idx]
 
 
 def _revert_frame(evm: Evm) -> None:
@@ -329,7 +346,8 @@ def approve(evm: Evm) -> None:
     ``APPROVE`` opcode (``0xAA``).
 
     Like ``RETURN`` but with a scope operand that updates transaction-scoped
-    approval state.
+    approval state per [EIP-8141] (bitmask ``APPROVE_PAYMENT`` /
+    ``APPROVE_EXECUTION`` / ``APPROVE_PAYMENT_AND_EXECUTION``).
 
     Stack (top first): ``offset``, ``length``, ``scope``.
 
@@ -351,32 +369,41 @@ def approve(evm: Evm) -> None:
     # OPERATION
     tx = _get_frame_tx(evm)
     tx_approval = _get_frame_tx_approval(evm)
+    current_frame = _get_current_frame_struct(evm, tx)
 
-    if scope > U256(2):
+    scope_int = int(scope)
+    allowed_scope = int(current_frame.flags) & int(APPROVE_SCOPE_MASK)
+
+    if scope_int == int(APPROVE_SCOPE_NONE) or scope_int > int(
+        APPROVE_PAYMENT_AND_EXECUTION
+    ):
+        raise InvalidApproveScope
+    if allowed_scope == 0 or (scope_int & ~allowed_scope) != 0:
         raise InvalidApproveScope
 
-    frame_target = _get_current_frame_target(evm, tx)
-    if evm.message.caller != frame_target:
+    resolved_target = _get_current_frame_target(evm, tx)
+    if evm.message.current_target != resolved_target:
         _revert_frame(evm)
 
+    scope_u = Uint(scope_int)
     state = evm.message.block_env.state
     tx_state_changes = evm.message.tx_env.state_changes
     frame_state_changes = evm.state_changes
 
-    if scope == U256(0):
+    if scope_u == APPROVE_EXECUTION:
         if tx_approval.sender_approved:
             _revert_frame(evm)
-        if evm.message.caller != tx.sender:
+        if resolved_target != tx.sender:
             _revert_frame(evm)
         tx_approval.sender_approved = True
 
-    elif scope == U256(1):
+    elif scope_u == APPROVE_PAYMENT:
         if tx_approval.payer_approved:
             _revert_frame(evm)
         if not tx_approval.sender_approved:
             _revert_frame(evm)
 
-        payer_balance = get_account(state, frame_target).balance
+        payer_balance = get_account(state, resolved_target).balance
         if Uint(payer_balance) < tx_approval.tx_fee:
             _revert_frame(evm)
 
@@ -389,26 +416,27 @@ def approve(evm: Evm) -> None:
             U64(sender_nonce_after),
         )
 
-        track_address(frame_state_changes, frame_target)
-        capture_pre_balance(tx_state_changes, frame_target, payer_balance)
+        track_address(frame_state_changes, resolved_target)
+        capture_pre_balance(tx_state_changes, resolved_target, payer_balance)
         payer_balance_after = U256(Uint(payer_balance) - tx_approval.tx_fee)
-        set_account_balance(state, frame_target, payer_balance_after)
+        set_account_balance(state, resolved_target, payer_balance_after)
         track_balance_change(
             frame_state_changes,
-            frame_target,
+            resolved_target,
             payer_balance_after,
         )
 
         tx_approval.payer_approved = True
-        tx_approval.payer_address = frame_target
+        tx_approval.payer_address = resolved_target
 
-    else:  # scope == 2
+    else:
+        # APPROVE_PAYMENT_AND_EXECUTION
         if tx_approval.sender_approved or tx_approval.payer_approved:
             _revert_frame(evm)
-        if evm.message.caller != tx.sender:
+        if resolved_target != tx.sender:
             _revert_frame(evm)
 
-        payer_balance = get_account(state, frame_target).balance
+        payer_balance = get_account(state, resolved_target).balance
         if Uint(payer_balance) < tx_approval.tx_fee:
             _revert_frame(evm)
 
@@ -423,18 +451,18 @@ def approve(evm: Evm) -> None:
             U64(sender_nonce_after),
         )
 
-        track_address(frame_state_changes, frame_target)
-        capture_pre_balance(tx_state_changes, frame_target, payer_balance)
+        track_address(frame_state_changes, resolved_target)
+        capture_pre_balance(tx_state_changes, resolved_target, payer_balance)
         payer_balance_after = U256(Uint(payer_balance) - tx_approval.tx_fee)
-        set_account_balance(state, frame_target, payer_balance_after)
+        set_account_balance(state, resolved_target, payer_balance_after)
         track_balance_change(
             frame_state_changes,
-            frame_target,
+            resolved_target,
             payer_balance_after,
         )
 
         tx_approval.payer_approved = True
-        tx_approval.payer_address = frame_target
+        tx_approval.payer_address = resolved_target
 
     evm.memory += b"\x00" * extend_memory.expand_by
     evm.output = Bytes(bytes(evm.memory[offset : offset + length]))

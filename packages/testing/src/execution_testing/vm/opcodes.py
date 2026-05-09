@@ -5662,103 +5662,127 @@ class Opcodes(Opcode, Enum):
     ----
     Terminate execution successfully like RETURN while updating
     transaction-scoped frame-transaction approval state according
-    to `scope` (0=execution, 1=payment, 2=both). Introduced in
-    EIP-8141.
+    to EIP-8141 bitmask ``scope``.
 
     Inputs
     ----
     - offset: byte offset in memory of return data
     - size: byte size of return data
-    - scope: approval scope (0, 1, or 2)
+    - scope: approval bitmask — ``APPROVE_PAYMENT`` (0x1), 
+      ``APPROVE_EXECUTION`` (0x2), or ``APPROVE_PAYMENT_AND_EXECUTION`` (0x3).
+      ``APPROVE_SCOPE_NONE`` (0x0) or any other value results in exceptional halt.
 
     Outputs
     ----
     None (terminates current context)
     """
 
-    TXPARAMLOAD = Opcode(
+    TXPARAM = Opcode(
         0xB0,
-        popped_stack_items=3,
+        popped_stack_items=1,
         pushed_stack_items=1,
-        kwargs=["selector", "index", "offset"],
+        kwargs=["param"],
     )
     """
-    TXPARAMLOAD(selector, index, offset)
+    TXPARAM(param)
     ----
 
     Description
     ----
-    Load a 32-byte word from a transaction parameter field.
-    Introduced in EIP-8141.
+    Transaction-scoped parameter word per [EIP-8141] (``param`` 0x00--0x0A).
 
     Inputs
     ----
-    - selector: parameter field selector (0x00-0x15)
-    - index: frame index (for per-frame fields)
-    - offset: byte offset within the field
+    - param: parameter id
+        0x00 — transaction type
+        0x01 — nonce
+        0x02 — sender
+        0x03 — max_priority_fee_per_gas
+        0x04 — max_fee_per_gas
+        0x05 — max_fee_per_blob_gas
+        0x06 — max cost
+        0x07 — len(blob_versioned_hashes)
+        0x08 — compute_sig_hash(tx)
+        0x09 — len(frames)
+        0x0A — currently executing frame index
 
     Outputs
     ----
-    - value: 32-byte word from the parameter field
+    - value: the requested parameter value
     """
 
-    TXPARAMSIZE = Opcode(
+    FRAMEDATALOAD = Opcode(
         0xB1,
         popped_stack_items=2,
         pushed_stack_items=1,
-        kwargs=["selector", "index"],
+        kwargs=["offset", "frame_index"],
     )
     """
-    TXPARAMSIZE(selector, index)
+    FRAMEDATALOAD(offset, frame_index)
     ----
 
     Description
     ----
-    Return the byte size of a transaction parameter field.
-    Introduced in EIP-8141.
+    Load a 32-byte word from a frame's calldata per [EIP-8141].
 
     Inputs
     ----
-    - selector: parameter field selector
-    - index: frame index (for per-frame fields)
+    - offset: byte offset in frame data
+    - frame_index: index into ``tx.frames``
 
     Outputs
     ----
-    - size: byte size of the field
+    - word: data word (zero when frame is VERIFY)
     """
 
-    TXPARAMCOPY = Opcode(
+    FRAMEDATACOPY = Opcode(
         0xB2,
-        popped_stack_items=5,
+        popped_stack_items=4,
         pushed_stack_items=0,
-        kwargs=[
-            "selector",
-            "index",
-            "dest_offset",
-            "offset",
-            "size",
-        ],
+        kwargs=["mem_offset", "data_offset", "length", "frame_index"],
     )
     """
-    TXPARAMCOPY(selector, index, dest_offset, offset, size)
+    FRAMEDATACOPY(mem_offset, data_offset, length, frame_index)
     ----
 
     Description
     ----
-    Copy bytes from a transaction parameter field into memory.
-    Introduced in EIP-8141.
+    Copy frame calldata to memory per [EIP-8141].
 
     Inputs
     ----
-    - selector: parameter field selector
-    - index: frame index (for per-frame fields)
-    - dest_offset: byte offset in memory to copy to
-    - offset: byte offset within the field to copy from
-    - size: number of bytes to copy
+    - mem_offset: destination in memory
+    - data_offset: offset in frame data
+    - length: number of bytes
+    - frame_index: index into ``tx.frames``
 
     Outputs
     ----
     None
+    """
+
+    FRAMEPARAM = Opcode(
+        0xB3,
+        popped_stack_items=2,
+        pushed_stack_items=1,
+        kwargs=["param", "frame_index"],
+    )
+    """
+    FRAMEPARAM(param, frame_index)
+    ----
+
+    Description
+    ----
+    Per-frame metadata word per [EIP-8141] (``param`` 0x00--0x08).
+
+    Inputs
+    ----
+    - param: field selector
+    - frame_index: index into ``tx.frames``
+
+    Outputs
+    ----
+    - word: 32-byte value
     """
 
 

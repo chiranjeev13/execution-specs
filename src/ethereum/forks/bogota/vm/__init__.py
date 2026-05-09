@@ -148,7 +148,8 @@ class TransactionEnvironment:
     """
     frame_tx: Optional[FrameTransaction] = None
     """
-    Reference to the ``FrameTransaction`` for ``TXPARAM*`` opcodes.
+    Reference to the ``FrameTransaction`` for ``TXPARAM`` / ``FRAMEPARAM``
+    and related frame-transaction opcodes.
     ``None`` for non-frame transactions.
     """
     frame_tx_approval: Optional[FrameTxApprovalContext] = None
@@ -163,7 +164,7 @@ class TransactionEnvironment:
     frame_statuses: Optional[List[int]] = None
     """
     Binary status codes (``0`` failure, ``1`` success) of completed frames
-    for ``TXPARAM(0x15)`` introspection.
+    for ``FRAMEPARAM`` selector ``0x05`` introspection.
     ``None`` for non-frame transactions.
     """
 
